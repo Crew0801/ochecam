@@ -101,11 +101,16 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .stage-tools button{width:38px;height:38px;border-radius:10px;background:rgba(0,0,0,.62);display:grid;place-items:center}
 .stage-tools button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
 .stage-tools svg{width:19px;height:19px}
-.calbar{position:absolute;left:8px;right:8px;bottom:8px;padding:10px 12px;border-radius:12px;background:rgba(10,14,12,.86);display:flex;flex-direction:column;gap:8px;font-size:13px}
+.calbar{flex:none;padding:10px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;gap:8px;font-size:13px}
+.calbar p{margin:0;color:var(--muted)}
+.calbar p b{color:var(--fg)}
 .calbar .row{display:flex;gap:8px}
-.calbar button{flex:1;padding:9px;border-radius:10px;background:var(--raised);font-weight:600}
+.calbar button{flex:1;padding:11px;border-radius:10px;background:var(--raised);font-weight:600}
 .calbar button.ok{background:var(--green);color:#fff}
-
+.zoomrow{display:flex;align-items:center;gap:10px;font-weight:600}
+.zoomrow input{flex:1;accent-color:var(--amber)}
+.zoomrow b{min-width:40px;text-align:right;font:700 18px var(--display)}
+.stage video{right:auto;bottom:auto}
 .visit{flex:none;display:grid;grid-template-columns:repeat(3,1fr) auto;gap:6px}
 .slot{height:58px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1}
 .slot .l{font:800 26px var(--display)}
@@ -214,14 +219,16 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
       </div>
       <div class="status" id="status" data-k="off"><i></i><span>Kamera aus</span></div>
       <div class="stage-tools">
-        <button id="btnCal" aria-label="Kalibrieren" title="Kalibrieren"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 1v5M12 18v5M1 12h5M18 12h5"/></svg></button>
+        <button id="btnCal" aria-label="Zoom und Kalibrieren" title="Zoom und Kalibrieren"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 1v5M12 18v5M1 12h5M18 12h5"/></svg></button>
         <button id="btnDebug" aria-label="Erkennung anzeigen" aria-pressed="false" title="Erkennung anzeigen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
-      <div class="calbar" id="calbar" hidden>
-        <span>Ziehe die 4 Punkte auf die <b>äußere Kante des Doppelrings</b>, jeweils mittig im Feld <b>20, 6, 3 und 11</b>. Das Gitter muss danach genau auf dem Board liegen.</span>
-        <div class="row"><button id="calReset">Zurücksetzen</button><button class="ok" id="calDone">Fertig</button></div>
-      </div>
     </div>
+  </div>
+
+  <div class="calbar" id="calbar" hidden>
+    <p>Ziehe die 4 Punkte auf die <b>äußere Kante des Doppelrings</b>, mittig in <b>20, 6, 3 und 11</b>. Du musst den Punkt nicht genau treffen – in seiner Nähe ziehen reicht. Auf freier Fläche ziehen verschiebt den Ausschnitt.</p>
+    <label class="zoomrow" for="zoom"><span>Zoom</span><input type="range" id="zoom" min="1" max="4" step="0.05" value="1"><b id="zoomVal" class="num">1.0×</b></label>
+    <div class="row"><button id="calReset">Punkte zurücksetzen</button><button class="ok" id="calDone">Fertig</button></div>
   </div>
 
   <div class="visit" id="visit"></div>

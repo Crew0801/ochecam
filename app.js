@@ -487,7 +487,7 @@
     }
     stopCamera();
     const video_c = settings.camId ? { deviceId: { exact: settings.camId } } : { facingMode: { ideal: 'environment' } };
-    Object.assign(video_c, { width: { ideal: 1280 }, height: { ideal: 960 } });
+    Object.assign(video_c, { width: { ideal: 1920 }, height: { ideal: 1440 } });
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: video_c, audio: false });
     } catch (err) {
@@ -498,7 +498,7 @@
     await video.play().catch(() => {});
     await new Promise(r => video.videoWidth ? r() : video.addEventListener('loadedmetadata', r, { once: true }));
     stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
-    $('#camEmpty').hidden = true;
+    $('#camEmpty').hidden = true; applyView();
     $('#camToggle').textContent = 'Kamera stoppen';
     fitStage(); listCameras();
     try { const tr = stream.getVideoTracks()[0]; tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); } catch {}
@@ -550,52 +550,74 @@
 
   // ---------------- Calibration ----------------
   // Stored as 4 normalized image points [[x,y]...] for 20, 6, 3, 11.
+  let needMask = true; // detection mask must be rebuilt (calibration, zoom or size changed)
   let calib = store.get('calib', null);
   let H = null, Hinv = null; // image(norm) -> board(mm), board -> image
   function updateH() {
     if (!calib) { H = Hinv = null; return; }
     H = C.homography(calib, C.CAL_BOARD);
     Hinv = C.homography(C.CAL_BOARD, calib);
-    detector.maskDirty = true;
+    needMask = true;
   }
   updateH();
-  let calibrating = false, calDraft = null, drag = null;
-  const defaultCal = () => [[0.5, 0.12], [0.8, 0.5], [0.5, 0.88], [0.2, 0.5]];
+  let calibrating = false, calDraft = null, drag = null, pan = null;
+
+  // Digital zoom: the visible crop of the camera image. Calibration points stay in full-video
+  // coordinates, so zooming or panning never breaks an existing calibration.
+  let view = Object.assign({ z: 1, cx: 0.5, cy: 0.5 }, store.get('view', {}));
+  function crop() {
+    const w = 1 / view.z;
+    return { w, x0: Math.min(1 - w, Math.max(0, view.cx - w / 2)), y0: Math.min(1 - w, Math.max(0, view.cy - w / 2)) };
+  }
+  const v2d = (x, y) => { const c = crop(); return [(x - c.x0) / c.w, (y - c.y0) / c.w]; };
+  const d2v = (x, y) => { const c = crop(); return [c.x0 + x * c.w, c.y0 + y * c.w]; };
+  function applyView() {
+    const c = crop(); view.cx = c.x0 + c.w / 2; view.cy = c.y0 + c.w / 2;
+    Object.assign(video.style, { width: view.z * 100 + '%', height: view.z * 100 + '%', left: -c.x0 * view.z * 100 + '%', top: -c.y0 * view.z * 100 + '%' });
+    $('#zoom').value = view.z; $('#zoomVal').textContent = view.z.toFixed(1) + '×';
+    store.set('view', view); needMask = true; drawOverlay();
+  }
+  $('#zoom').addEventListener('input', e => { view.z = +e.target.value; applyView(); });
+  const defaultCal = () => [[0.5, 0.12], [0.8, 0.5], [0.5, 0.88], [0.2, 0.5]].map(q => d2v(q[0], q[1]));
   function startCalibration() {
     if (!stream) { toast('Erst die Kamera starten'); return; }
     calibrating = true; calDraft = (calib || defaultCal()).map(p => p.slice());
     calib = calDraft; updateH();
-    $('#calbar').hidden = false; setStatus('off', 'Kalibrieren');
+    $('#calbar').hidden = false; $('#visit').hidden = true; $('.actions').hidden = true; setStatus('off', 'Kalibrieren');
+    requestAnimationFrame(fitStage);
     drawOverlay();
   }
   function finishCalibration() {
     calibrating = false; calib = calDraft; store.set('calib', calib); updateH();
-    $('#calbar').hidden = true; detector.reset(); setStatus('ready', 'Bereit – wirf!');
+    $('#calbar').hidden = true; $('#visit').hidden = false; $('.actions').hidden = false; detector.reset(); setStatus('ready', 'Bereit – wirf!');
+    requestAnimationFrame(fitStage);
     toast('Kalibrierung gespeichert'); drawOverlay();
   }
   $('#btnCal').onclick = () => calibrating ? finishCalibration() : startCalibration();
   $('#calDone').onclick = finishCalibration;
   $('#calReset').onclick = () => { calDraft = defaultCal(); calib = calDraft; updateH(); drawOverlay(); };
 
+  const evPos = e => { const r = overlay.getBoundingClientRect(); return { r, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; };
   overlay.addEventListener('pointerdown', e => {
     if (!calibrating) return;
-    const r = overlay.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const { r, x, y } = evPos(e);
     let best = -1, bd = Infinity;
-    calDraft.forEach((p, i) => { const d = Math.hypot((p[0] - x) * r.width, (p[1] - y) * r.height); if (d < bd) { bd = d; best = i; } });
-    if (bd > 60) return;
-    drag = { i: best, sx: x, sy: y, px: calDraft[best][0], py: calDraft[best][1] };
+    calDraft.forEach((p, i) => { const [dx, dy] = v2d(p[0], p[1]); const d = Math.hypot((dx - x) * r.width, (dy - y) * r.height); if (d < bd) { bd = d; best = i; } });
+    if (bd <= 70) drag = { i: best, sx: x, sy: y, px: calDraft[best][0], py: calDraft[best][1] };
+    else if (view.z > 1.01) pan = { sx: x, sy: y, cx: view.cx, cy: view.cy, w: crop().w };
+    else return;
     overlay.setPointerCapture(e.pointerId);
   });
   overlay.addEventListener('pointermove', e => {
-    if (!drag) return;
-    const r = overlay.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-    // Relative drag (finger does not cover the point) at reduced speed for precision.
-    calDraft[drag.i] = [drag.px + (x - drag.sx) * 0.5, drag.py + (y - drag.sy) * 0.5];
+    if (!drag && !pan) return;
+    const { x, y } = evPos(e);
+    if (pan) { view.cx = pan.cx - (x - pan.sx) * pan.w; view.cy = pan.cy - (y - pan.sy) * pan.w; applyView(); return; }
+    // Relative drag (finger does not cover the point) at half speed for precision.
+    const w = crop().w;
+    calDraft[drag.i] = [drag.px + (x - drag.sx) * 0.5 * w, drag.py + (y - drag.sy) * 0.5 * w];
     calib = calDraft; updateH(); drawOverlay();
   });
-  const endDrag = () => { if (drag) { drag = null; drawOverlay(); } };
+  const endDrag = () => { pan = null; if (drag) { drag = null; drawOverlay(); } };
   overlay.addEventListener('pointerup', endDrag);
   overlay.addEventListener('pointercancel', endDrag);
 
@@ -613,7 +635,7 @@
       ctx.drawImage(detector.debugCanvas(), 0, 0, W, Hh); ctx.globalAlpha = 1;
     }
     if (Hinv) {
-      const toPx = (bx, by) => { const [u, v] = C.applyH(Hinv, bx, by); return [u * W, v * Hh]; };
+      const toPx = (bx, by) => { const [vx, vy] = C.applyH(Hinv, bx, by); const [u, v] = v2d(vx, vy); return [u * W, v * Hh]; };
       ctx.lineWidth = 1.2 * dpr;
       ctx.strokeStyle = calibrating ? 'rgba(240,181,74,.95)' : 'rgba(239,232,216,.38)';
       for (const r of [C.R.bull, C.R.obull, C.R.tIn, C.R.tOut, C.R.dIn, C.R.dOut]) {
@@ -636,7 +658,8 @@
     }
     if (calibrating && calDraft) {
       calDraft.forEach((p, i) => {
-        const x = p[0] * W, y = p[1] * Hh;
+        const [dx, dy] = v2d(p[0], p[1]);
+        const x = dx * W, y = dy * Hh;
         ctx.beginPath(); ctx.arc(x, y, 14 * dpr, 0, Math.PI * 2); ctx.fillStyle = 'rgba(216,68,58,.35)'; ctx.fill();
         ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#fff'; ctx.stroke();
         ctx.beginPath(); ctx.moveTo(x - 5 * dpr, y); ctx.lineTo(x + 5 * dpr, y); ctx.moveTo(x, y - 5 * dpr); ctx.lineTo(x, y + 5 * dpr); ctx.stroke();
@@ -646,8 +669,8 @@
       if (drag) { // magnifier
         const p = calDraft[drag.i];
         const vw = video.videoWidth, vh = video.videoHeight;
-        const zoomSrc = 0.08 * vw, L = Math.min(W, Hh) * 0.36;
-        const lx = p[0] < 0.5 ? W - L - 8 * dpr : 8 * dpr, ly = 50 * dpr;
+        const zoomSrc = 0.08 * vw * crop().w, L = Math.min(W, Hh) * 0.36;
+        const lx = v2d(p[0], p[1])[0] < 0.5 ? W - L - 8 * dpr : 8 * dpr, ly = 50 * dpr;
         ctx.save(); ctx.beginPath(); ctx.rect(lx, ly, L, L); ctx.clip();
         ctx.drawImage(video, p[0] * vw - zoomSrc / 2, p[1] * vh - zoomSrc / 2, zoomSrc, zoomSrc, lx, ly, L, L);
         ctx.restore();
@@ -661,7 +684,8 @@
         let img = d.img;
         if (!img && d.bp && Hinv) img = C.applyH(Hinv, d.bp[0], d.bp[1]);
         if (!img) return;
-        const x = img[0] * W, y = img[1] * Hh;
+        const [dx, dy] = v2d(img[0], img[1]);
+        const x = dx * W, y = dy * Hh;
         ctx.beginPath(); ctx.arc(x, y, 7 * dpr, 0, Math.PI * 2);
         ctx.fillStyle = d.bot ? '#5ab0f0' : d.manual ? 'rgba(147,161,152,.8)' : '#f0b54a'; ctx.fill();
         ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#000'; ctx.stroke();
@@ -682,7 +706,7 @@
     let ref = null, prev = null, stable = 0, pulling = false, bigSince = 0, cooldownUntil = 0;
     let dbgCanvas = null, dbgCtx = null;
     const self = {
-      maskDirty: true, lastBin: null,
+      lastBin: null,
       reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; pulling = G ? visitState().done : false; },
       waitForPull() { pulling = true; if (stream) setStatus('pull', 'Darts ziehen'); },
       get pulling() { return pulling; },
@@ -704,14 +728,15 @@
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw) return false;
       const w = 360, h = Math.round(w * vh / vw);
-      if (w !== PW || h !== PH) { PW = w; PH = h; proc.width = PW; proc.height = PH; self.maskDirty = true; ref = prev = null; }
-      if (self.maskDirty && H) {
+      if (w !== PW || h !== PH) { PW = w; PH = h; proc.width = PW; proc.height = PH; needMask = true; ref = prev = null; }
+      if (needMask && H) {
         mask = new Uint8Array(PW * PH); maskCount = 0;
         for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++) {
-          const [bx, by] = C.applyH(H, (x + 0.5) / PW, (y + 0.5) / PH);
+          const [vx, vy] = d2v((x + 0.5) / PW, (y + 0.5) / PH);
+          const [bx, by] = C.applyH(H, vx, vy);
           if (Math.hypot(bx, by) < 182) { mask[y * PW + x] = 1; maskCount++; }
         }
-        self.maskDirty = false; ref = prev = null;
+        needMask = false; ref = prev = null;
       }
       return !!mask;
     }
@@ -730,7 +755,8 @@
       if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over || isBotTurn()) return;
       if (!$('#padSheet').hidden || !$('#modal').hidden) return;
       if (!ensureSize()) return;
-      pctx.drawImage(video, 0, 0, PW, PH);
+      const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
+      pctx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, PW, PH);
       const cur = pctx.getImageData(0, 0, PW, PH).data;
       if (!ref) { ref = new Uint8ClampedArray(cur); prev = new Uint8ClampedArray(cur); stable = 0; return; }
       const P = params();
@@ -766,7 +792,7 @@
       const hit = C.findDart(ch.bin, PW, PH, { minArea: P.minArea, tipPref: settings.tipPref });
       ref = new Uint8ClampedArray(cur); stable = 0; cooldownUntil = now + 350;
       if (!hit) return;
-      const nx = hit.x / PW, ny = hit.y / PH;
+      const [nx, ny] = d2v(hit.x / PW, hit.y / PH);
       const [bx, by] = C.applyH(H, nx, ny);
       const d = C.scoreAt(bx, by);
       setStatus('hit', 'Erkannt: ' + d.label);
