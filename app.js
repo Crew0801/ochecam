@@ -228,6 +228,7 @@
 
   function editDart(i, d) {
     snapshot();
+    if (advance) advance.until = performance.now() + ADV_MS; // corrected: give the full time again
     G.visit[i] = Object.assign({}, d, { manual: true });
     G.visit = G.visit.slice(0, 3);
     afterChange(false);
@@ -257,11 +258,7 @@
       // Against a bot the game goes on by itself; pull your darts while the bot throws.
       const nextIdx = (G.cur + 1) % G.players.length;
       if (G.players.some(p => p.bot) && (st.win || G.players[nextIdx].bot)) {
-        const key = undoStack.length;
-        clearTimeout(advanceTimer);
-        advanceTimer = setTimeout(() => {
-          if (G && !G.over && undoStack.length === key && !isBotTurn() && visitState().done && $('#modal').hidden && !$('#game').hidden) nextTurn();
-        }, 2400);
+        startAdvance();
       }
     }
     persist(); render();
@@ -308,7 +305,7 @@
 
   function undo() {
     if (!undoStack.length) { toast('Nichts zum Zurücknehmen'); return; }
-    clearTimeout(botTimer); clearTimeout(advanceTimer);
+    clearTimeout(botTimer); advance = null;
     G = JSON.parse(undoStack.pop());
     // Skip back over bot throws to the last human action.
     while (undoStack.length && G.players[G.cur].bot) G = JSON.parse(undoStack.pop());
@@ -318,7 +315,35 @@
   }
 
   // ---------------- Dart bot ----------------
-  let botTimer = null, advanceTimer = null;
+  let botTimer = null;
+
+  // ---------------- Correction time before the bot throws ----------------
+  const ADV_MS = 7000;
+  let advance = null; // { until }
+  function startAdvance() { advance = { until: performance.now() + ADV_MS }; }
+  function drawAdvance() {
+    if (!advance || !G) return;
+    const left = Math.max(0, Math.ceil((advance.until - performance.now()) / 1000));
+    const next = G.players[(G.cur + 1) % G.players.length];
+    const co = $('#checkout');
+    co.className = 'checkout advance';
+    co.innerHTML = `<span class="k">Korrigieren?</span><span class="advtxt">${escapeHtml(next.bot ? next.name : 'Nächstes Leg')} in ${left} s</span>`
+      + `<button class="advbtn" data-adv="wait">Warten</button><button class="advbtn go" data-adv="go">Weiter</button>`;
+  }
+  $('#checkout').addEventListener('click', e => {
+    const b = e.target.closest('[data-adv]'); if (!b) return;
+    const go = b.dataset.adv === 'go';
+    advance = null;
+    if (go) nextTurn(); else { render(); toast('Angehalten – mit „Weiter“ geht es weiter'); }
+  });
+  setInterval(() => {
+    if (!advance) return;
+    if (!G || G.over || isBotTurn() || !visitState().done || $('#game').hidden) { advance = null; return; }
+    // While a correction dialog is open, the clock waits.
+    if (!$('#padSheet').hidden || !$('#modal').hidden) advance.until = Math.max(advance.until, performance.now() + 3000);
+    if (performance.now() >= advance.until) { advance = null; nextTurn(); return; }
+    drawAdvance();
+  }, 250);
   const isBotTurn = () => !!(G && !G.over && G.players[G.cur].bot);
   function scheduleBot() {
     clearTimeout(botTimer);
@@ -365,6 +390,7 @@
     else if (st.win) { co.className = 'checkout'; co.innerHTML = '<span class="k">Game shot</span> Leg gewonnen!'; }
     else if (route) { co.className = 'checkout'; co.innerHTML = '<span class="k">Weg</span> ' + route.map(d => d.label).join(' · '); }
     else if (st.done) { co.className = 'checkout none'; co.textContent = 'Darts ziehen – danach geht es automatisch weiter'; }
+    if (advance && st.done) drawAdvance();
     else { co.className = 'checkout none'; co.textContent = st.rem <= 180 && G.out !== 'single' ? 'Kein Finish möglich – stellen' : 'Noch kein Finish-Bereich'; }
 
     // Visit slots
@@ -590,12 +616,37 @@
   }
   $('#zoom').addEventListener('input', e => { view.z = +e.target.value; applyView(); });
   const defaultCal = () => [[0.5, 0.12], [0.8, 0.5], [0.5, 0.88], [0.2, 0.5]].map(q => d2v(q[0], q[1]));
+  /** Find the board in the current camera image and place the 4 points automatically. */
+  async function runAutoCal() {
+    if (!stream || !video.videoWidth) { toast('Erst die Kamera starten'); return false; }
+    const btn = $('#calAuto');
+    btn.disabled = true; btn.textContent = 'Suche Board …';
+    await new Promise(r => setTimeout(r, 40)); // let the button repaint first
+    const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
+    const W = 560, Hc = Math.round(W * vh / vw);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = Hc;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, W, Hc);
+    let res;
+    try { res = C.autoCalibrate(cx.getImageData(0, 0, W, Hc).data, W, Hc); } catch (e) { res = { error: 'Erkennung fehlgeschlagen' }; }
+    btn.disabled = false; btn.textContent = 'Automatisch erkennen';
+    if (res.points && calibrating) {
+      calDraft = res.points.map(([x, y]) => d2v(x / W, y / Hc));
+      calib = calDraft; updateH(); drawOverlay();
+    }
+    if (res.error) { toast(res.error, 4500); return false; }
+    toast('Board erkannt – Gitter prüfen, dann „Fertig“', 3500);
+    return true;
+  }
+
   function startCalibration() {
     if (!stream) { toast('Erst die Kamera starten'); return; }
+    const firstTime = !store.get('calib', null);
     calibrating = true; calDraft = (calib || defaultCal()).map(p => p.slice());
     calib = calDraft; updateH();
     $('#calbar').hidden = false; $('#visit').hidden = true; $('.actions').hidden = true; setStatus('off', 'Kalibrieren');
     requestAnimationFrame(fitStage);
+    if (firstTime) setTimeout(() => { if (calibrating) runAutoCal(); }, 900);
     drawOverlay();
   }
   function finishCalibration() {
@@ -606,6 +657,7 @@
   }
   $('#btnCal').onclick = () => calibrating ? finishCalibration() : startCalibration();
   $('#calDone').onclick = finishCalibration;
+  $('#calAuto').onclick = runAutoCal;
   $('#calReset').onclick = () => { calDraft = defaultCal(); calib = calDraft; updateH(); drawOverlay(); };
 
   const evPos = e => { const r = overlay.getBoundingClientRect(); return { r, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; };

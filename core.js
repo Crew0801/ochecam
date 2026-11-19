@@ -307,6 +307,243 @@
     };
   }
 
+  // ---------- Automatic calibration ----------
+  /** 0 = other, 1 = board red, 2 = board green (hue/chroma based, tolerant to lighting). */
+  function boardColor(r, g, b) {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), c = mx - mn;
+    if (c < 30 || c < 0.28 * mx) return 0;
+    let hue;
+    if (mx === r) hue = ((g - b) / c) * 60;
+    else if (mx === g) hue = ((b - r) / c + 2) * 60;
+    else hue = ((r - g) / c + 4) * 60;
+    if (hue < 0) hue += 360;
+    if (hue <= 28 || hue >= 330) return 1;
+    if (hue >= 75 && hue <= 175) return 2;
+    return 0;
+  }
+
+  /**
+   * Find the four calibration points (outer double ring at 20, 6, 3, 11) in an RGBA image.
+   * Assumes the board hangs roughly upright (20 at the top, within about ±40°).
+   * Returns {points: [[x,y] x4] in pixels, segments, center} or {error}.
+   */
+  function autoCalibrate(px, w, h) {
+    const cls = new Uint8Array(w * h);
+    const xs = [], ys = [];
+    for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+      const k = boardColor(px[j], px[j + 1], px[j + 2]);
+      cls[i] = k;
+      if (k) { xs.push(i % w); ys.push((i / w) | 0); }
+    }
+    if (xs.length < w * h * 0.005) return { error: 'Kein Dartboard im Bild gefunden' };
+    const med = a => { const s = a.slice().sort((p, q) => p - q); return s[s.length >> 1]; };
+    const at = (x, y) => {
+      const xi = Math.round(x), yi = Math.round(y);
+      return xi < 0 || yi < 0 || xi >= w || yi >= h ? -1 : cls[yi * w + xi];
+    };
+    const N = 360;
+
+    // For each ray from the centre: the outer double ring is the outermost coloured band that has
+    // a matching triple band at ~0.62 of its radius (rules out red walls, flags, etc.).
+    function rays(cx, cy) {
+      const out = new Array(N).fill(null);
+      for (let k = 0; k < N; k++) {
+        const t = k / N * Math.PI * 2, dx = Math.cos(t), dy = Math.sin(t);
+        const rmax = Math.min(dx > 0 ? (w - 1 - cx) / dx : dx < 0 ? -cx / dx : 1e9, dy > 0 ? (h - 1 - cy) / dy : dy < 0 ? -cy / dy : 1e9);
+        const iv = [];
+        let a = -1, lastC = -10;
+        for (let r = 0; r <= rmax; r += 0.5) {
+          const c = at(cx + dx * r, cy + dy * r);
+          if (c > 0) { if (a < 0 || r - lastC > 1.5) { if (a >= 0) iv.push([a, lastC]); a = r; } lastC = r; }
+        }
+        if (a >= 0) iv.push([a, lastC]);
+        for (let j = iv.length - 1; j >= 0; j--) {
+          const [da, db] = iv[j];
+          // Real rings are a few percent of the radius thick; single noisy pixels are not.
+          if (db < 12 || db - da > 0.18 * db || db - da < Math.max(1.5, 0.022 * db)) continue;
+          const rm = (da + db) / 2, col = at(cx + dx * rm, cy + dy * rm);
+          // Triple ring inside, same segment colour as the double on this ray.
+          const tri = iv.find(([ta, tb]) => tb > 0.46 * db && tb < 0.8 * db && tb - ta < 0.18 * tb && tb - ta >= Math.max(1, 0.015 * tb)
+            && at(cx + dx * (ta + tb) / 2, cy + dy * (ta + tb) / 2) === col);
+          if (!tri) continue;
+          out[k] = { r: db + 0.5, col };
+          break;
+        }
+      }
+      // Drop outliers against the local median radius.
+      const rs = out.map(o => (o ? o.r : null));
+      for (let k = 0; k < N; k++) {
+        if (!out[k]) continue;
+        const nb = [];
+        for (let d = -6; d <= 6; d++) { const v = rs[(k + d + N) % N]; if (v) nb.push(v); }
+        const m = med(nb);
+        if (Math.abs(out[k].r - m) > 0.08 * m) out[k] = null;
+      }
+      return out;
+    }
+
+    // Expected board colour (0 none, 1 red, 2 green) at board polar coords (mm, degrees clockwise from top).
+    const expect = (rr, th) => {
+      if ((rr > R.tIn && rr < R.tOut) || (rr > R.dIn && rr < R.dOut)) {
+        const idx = Math.floor((((th + 9) % 360) + 360) % 360 / 18);
+        return idx % 2 === 0 ? 1 : 2;
+      }
+      return 0;
+    };
+    // Sample radii (mm): inside both coloured rings and just outside their edges.
+    const RADII = [96, 101, 105, 110, 158, 165, 168, 175];
+    const SAMPLES = [];
+    for (let th = 1; th < 360; th += 2) for (const rr of RADII) {
+      const t = th * Math.PI / 180;
+      SAMPLES.push([rr * Math.sin(t), -rr * Math.cos(t), expect(rr, th)]);
+    }
+    /** How well the board model, placed by 4 image points, matches the colours in the image. */
+    function modelScore(points) {
+      const Hm = homography(CAL_BOARD, points);
+      if (!Hm) return -1e9;
+      let sc = 0;
+      for (const [bx, by, e] of SAMPLES) {
+        const [x, y] = applyH(Hm, bx, by);
+        const c = at(x, y);
+        if (c < 0) continue;
+        sc += c === e ? 1 : (e && c ? -2 : -1);
+      }
+      return sc;
+    }
+
+    function solveFrom(cx, cy) {
+      const ray = rays(cx, cy);
+      const pts = [];
+      ray.forEach((o, k) => { if (o) { const t = k / N * Math.PI * 2; pts.push([Math.cos(t) * o.r, Math.sin(t) * o.r]); } });
+      if (pts.length < N * 0.12) return { error: 'Doppelring nicht klar erkennbar (Licht, Ausschnitt oder Zoom prüfen)' };
+      // Least-squares ellipse a x² + b xy + c y² + d x + e y = 1 (coords relative to the ray centre).
+      const A = [0, 0, 0, 0, 0].map(() => [0, 0, 0, 0, 0]), B = [0, 0, 0, 0, 0];
+      for (const [x, y] of pts) {
+        const v = [x * x, x * y, y * y, x, y];
+        for (let i = 0; i < 5; i++) { B[i] += v[i]; for (let j = 0; j < 5; j++) A[i][j] += v[i] * v[j]; }
+      }
+      const q = solve(A, B);
+      if (!q) return { error: 'Ellipse nicht bestimmbar' };
+      const [ea, eb, ec, ed, ee] = q;
+      const det = 4 * ea * ec - eb * eb;
+      if (det <= 0) return { error: 'Doppelring nicht als Ellipse erkennbar' };
+      const x0 = (-2 * ec * ed + eb * ee) / det, y0 = (eb * ed - 2 * ea * ee) / det;
+      const f = ea * x0 * x0 + eb * x0 * y0 + ec * y0 * y0 + ed * x0 + ee * y0 - 1;
+      if (f >= 0) return { error: 'Doppelring nicht als Ellipse erkennbar' };
+      // Q = conic / -f is positive definite; M = Q^(-1/2) maps the unit circle onto the ellipse.
+      const qa = ea / -f, qb = eb / 2 / -f, qc = ec / -f;
+      const tr = qa + qc, dd = Math.sqrt(Math.max(0, (qa - qc) * (qa - qc) / 4 + qb * qb));
+      const l1 = tr / 2 + dd, l2 = tr / 2 - dd;
+      if (l2 <= 0) return { error: 'Doppelring nicht als Ellipse erkennbar' };
+      const ang = 0.5 * Math.atan2(2 * qb, qa - qc), cs = Math.cos(ang), sn = Math.sin(ang);
+      const s1 = 1 / Math.sqrt(l1), s2 = 1 / Math.sqrt(l2);
+      const M = [cs * cs * s1 + sn * sn * s2, cs * sn * (s1 - s2), cs * sn * (s1 - s2), sn * sn * s1 + cs * cs * s2];
+      const ex = cx + x0, ey = cy + y0;
+      const inlier = pts.filter(([x, y]) => {
+        const u = x - x0, v = y - y0;
+        return Math.abs(qa * u * u + 2 * qb * u * v + qc * v * v - 1) < 0.15;
+      }).length;
+      // Affine guess for 4 points at rotation phi, then pick phi by the colour pattern.
+      const guess = phi => [0, 90, 180, 270].map(th => {
+        const t = (th + phi) * Math.PI / 180, u = Math.sin(t), v = -Math.cos(t);
+        return [ex + M[0] * u + M[1] * v, ey + M[2] * u + M[3] * v];
+      });
+      const tries = [];
+      for (let phi = -60; phi <= 60; phi += 1) tries.push({ phi, sc: modelScore(guess(phi)) });
+      // Several phases are plausible under perspective; return the best few, the fine-tuning decides.
+      tries.sort((p1, p2) => p2.sc - p1.sc);
+      const phases = [];
+      for (const t of tries) { if (phases.every(q => Math.abs(q - t.phi) >= 8)) phases.push(t.phi); if (phases.length >= 5) break; }
+      return { options: phases.map(ph => guess(ph)), valid: inlier, center: [ex, ey], from: [cx, cy] };
+    }
+
+    /** Fine-tune the 4 points so the full (perspective) board model matches the colours best. */
+    function refine(points) {
+      let P = points.map(p => p.slice()), sc = modelScore(P);
+      for (const step of [12, 6, 3, 1.5, 0.75]) {
+        let improved = true, guard = 0;
+        while (improved && guard++ < 20) {
+          improved = false;
+          const moves = [];
+          for (let i = 0; i < 4; i++) for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+            moves.push(() => { const T = P.map(p => p.slice()); T[i][0] += dx; T[i][1] += dy; return T; });
+          }
+          // Whole-board moves: rotate and scale around the centre (escape local optima).
+          const cxm = (P[0][0] + P[1][0] + P[2][0] + P[3][0]) / 4, cym = (P[0][1] + P[1][1] + P[2][1] + P[3][1]) / 4;
+          const rad = Math.max(...P.map(p => Math.hypot(p[0] - cxm, p[1] - cym))) || 1;
+          for (const a of [step / rad, -step / rad]) moves.push(() => P.map(([x, y]) => [cxm + (x - cxm) * Math.cos(a) - (y - cym) * Math.sin(a), cym + (x - cxm) * Math.sin(a) + (y - cym) * Math.cos(a)]));
+          for (const f of [1 + step / rad, 1 - step / rad]) moves.push(() => P.map(([x, y]) => [cxm + (x - cxm) * f, cym + (y - cym) * f]));
+          for (const f of [1 + step / rad, 1 - step / rad]) {
+            moves.push(() => P.map(([x, y]) => [cxm + (x - cxm) * f, y]));
+            moves.push(() => P.map(([x, y]) => [x, cym + (y - cym) * f]));
+          }
+          for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]]) moves.push(() => P.map(([x, y]) => [x + dx, y + dy]));
+          // Opposite points moving together (perspective tilt).
+          for (const [i, j] of [[0, 2], [1, 3]]) for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+            moves.push(() => { const T = P.map(p => p.slice()); T[i][0] += dx; T[i][1] += dy; T[j][0] += dx; T[j][1] += dy; return T; });
+          }
+          for (const mv of moves) {
+            const T = mv();
+            const s2 = modelScore(T);
+            if (s2 > sc) { sc = s2; P = T; improved = true; }
+          }
+        }
+      }
+      return { points: P, score: sc };
+    }
+
+    // Centre candidates: median of coloured pixels plus the densest coloured areas
+    // (a red wall or flag next to the board would pull the median away).
+    const G = 12, gw = Math.ceil(w / G), gh = Math.ceil(h / G), dens = new Float32Array(gw * gh);
+    for (let i = 0; i < xs.length; i++) dens[((ys[i] / G) | 0) * gw + ((xs[i] / G) | 0)]++;
+    // Solid coloured areas (walls, posters) are not ring-like: ignore cells that are mostly coloured.
+    for (let i = 0; i < dens.length; i++) if (dens[i] > G * G * 0.6) dens[i] = 0;
+    const sm = new Float32Array(gw * gh);
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      let t = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) { const yy = y + dy, xx = x + dx; if (yy >= 0 && xx >= 0 && yy < gh && xx < gw) t += dens[yy * gw + xx]; }
+      sm[y * gw + x] = t;
+    }
+    const cands = [[med(xs), med(ys)]];
+    const order = Array.from(sm.keys()).sort((a, b) => sm[b] - sm[a]);
+    for (const i of order) {
+      const c = [(i % gw + 0.5) * G, (((i / gw) | 0) + 0.5) * G];
+      if (cands.every(q => Math.hypot(q[0] - c[0], q[1] - c[1]) > 4 * G)) cands.push(c);
+      if (cands.length >= 8) break;
+    }
+    // Ellipse fits from the centre candidates; keep the two with the most ring points.
+    let fits = [], lastErr = 'Doppelring nicht klar erkennbar (Licht, Ausschnitt oder Zoom prüfen)';
+    for (const [qx, qy] of cands) {
+      const r = solveFrom(qx, qy);
+      if (r.error) { lastErr = r.error; continue; }
+      fits.push(r);
+    }
+    if (!fits.length) return { error: lastErr };
+    // Re-run from each fit's ellipse centre (close to the bull) – twice – and keep the best two.
+    for (let pass = 0; pass < 2; pass++) {
+      fits.sort((f1, f2) => f2.valid - f1.valid);
+      const more = [];
+      for (const f of fits.slice(0, 3)) {
+        if (fits.some(g => g !== f && Math.hypot(g.from[0] - f.center[0], g.from[1] - f.center[1]) < 3)) continue;
+        const r = solveFrom(f.center[0], f.center[1]);
+        if (!r.error) more.push(r);
+      }
+      fits = fits.concat(more);
+    }
+    fits.sort((f1, f2) => f2.valid - f1.valid);
+    fits = fits.slice(0, 2);
+    // Fine-tune every plausible placement against the colours; best match wins,
+    // near-ties go to the placement with 20 closest to the top.
+    const results = [];
+    for (const f of fits) for (const opt of f.options) results.push(refine(opt));
+    const top = Math.max(...results.map(r => r.score));
+    const up = r => { const c = applyH(homography(CAL_BOARD, r.points), 0, 0); return Math.atan2(r.points[0][0] - c[0], c[1] - r.points[0][1]); };
+    const pick = results.filter(r => r.score >= top * 0.97).sort((r1, r2) => Math.abs(up(r1)) - Math.abs(up(r2)))[0];
+    const quality = pick.score / SAMPLES.length;
+    if (quality < 0.45) return { error: 'Board nur unsicher erkannt – bitte von Hand nachziehen', points: pick.points, quality };
+    return { points: pick.points, quality, center: applyH(homography(CAL_BOARD, pick.points), 0, 0) };
+  }
+
   // ---------- Dart bot ----------
   /** Board point (mm) a player aims at for a given bed. */
   function aimPoint(d) {
@@ -361,7 +598,7 @@
 
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    meanOffset, diffMask, denoise, components, findDart, findDarts, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

@@ -107,6 +107,12 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .calbar .row{display:flex;gap:8px}
 .calbar button{flex:1;padding:11px;border-radius:10px;background:var(--raised);font-weight:600}
 .calbar button.ok{background:var(--green);color:#fff}
+.calbar button.auto{background:var(--amber);color:#1a1408;font-weight:700}
+.calbar button:disabled{opacity:.6}
+.checkout.advance{flex-wrap:wrap;row-gap:4px}
+.advtxt{flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.advbtn{padding:5px 12px;border-radius:999px;background:var(--raised);color:var(--fg);font:600 13px var(--body);border:1px solid var(--line)}
+.advbtn.go{background:var(--green);border-color:var(--green);color:#fff}
 .zoomrow{display:flex;align-items:center;gap:10px;font-weight:600}
 .zoomrow input{flex:1;accent-color:var(--amber)}
 .zoomrow b{min-width:40px;text-align:right;font:700 18px var(--display)}
@@ -226,8 +232,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   </div>
 
   <div class="calbar" id="calbar" hidden>
-    <p>Ziehe die 4 Punkte auf die <b>äußere Kante des Doppelrings</b>, mittig in <b>20, 6, 3 und 11</b>. Du musst den Punkt nicht genau treffen – in seiner Nähe ziehen reicht. Auf freier Fläche ziehen verschiebt den Ausschnitt.</p>
+    <p>„Automatisch erkennen“ sucht das Board selbst (20 muss oben sein). Danach oder stattdessen: Ziehe die 4 Punkte auf die <b>äußere Kante des Doppelrings</b>, mittig in <b>20, 6, 3 und 11</b>. Du musst den Punkt nicht genau treffen – in seiner Nähe ziehen reicht. Auf freier Fläche ziehen verschiebt den Ausschnitt.</p>
     <label class="zoomrow" for="zoom"><span>Zoom</span><input type="range" id="zoom" min="1" max="4" step="0.05" value="1"><b id="zoomVal" class="num">1.0×</b></label>
+    <button class="auto" id="calAuto">Automatisch erkennen</button>
     <div class="row"><button id="calReset">Punkte zurücksetzen</button><button class="ok" id="calDone">Fertig</button></div>
   </div>
 
