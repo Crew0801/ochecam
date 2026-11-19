@@ -123,7 +123,7 @@
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; document.body.appendChild(cv);
     const c = cv.getContext('2d'); c.scale(dpr, dpr);
-    const colors = ['#d8443a', '#2e9b5c', '#e9dcc0', '#f0b54a', '#5ab0f0', '#ffffff'];
+    const colors = ['#ff3d81', '#ff8a3d', '#c4ff3d', '#3de4ff', '#8f6bff', '#ffc53d', '#ffffff'];
     const ps = Array.from({ length: amount }, () => ({
       x: innerWidth / 2 + (Math.random() - .5) * 60, y: innerHeight * 0.45,
       vx: (Math.random() - .5) * 14, vy: -Math.random() * 15 - 5, r: Math.random() * Math.PI, vr: (Math.random() - .5) * .4,
@@ -472,18 +472,18 @@
       const [x1, y1] = pt(r1, a1), [x2, y2] = pt(r2, a1), [x3, y3] = pt(r2, a2), [x4, y4] = pt(r1, a2);
       return `M${x1} ${y1}L${x2} ${y2}A${r2} ${r2} 0 0 1 ${x3} ${y3}L${x4} ${y4}A${r1} ${r1} 0 0 0 ${x1} ${y1}Z`;
     };
-    let html = `<circle r="200" fill="#111"/>`;
+    let html = `<circle r="200" fill="#0c0a1d"/>`;
     C.SEG.forEach((n, i) => {
       const a1 = i * 18 - 9, a2 = a1 + 18, dark = i % 2 === 0;
-      const single = dark ? '#1b1b1b' : '#e9dcc0', ring = dark ? '#d8443a' : '#2e9b5c';
+      const single = dark ? '#1a1638' : '#2e2860', ring = dark ? '#ff3d81' : '#3de4ff';
       html += `<path d="${seg(C.R.obull, C.R.tIn, a1, a2)}" fill="${single}"/>`;
       html += `<path d="${seg(C.R.tIn, C.R.tOut, a1, a2)}" fill="${ring}"/>`;
       html += `<path d="${seg(C.R.tOut, C.R.dIn, a1, a2)}" fill="${single}"/>`;
       html += `<path d="${seg(C.R.dIn, C.R.dOut, a1, a2)}" fill="${ring}"/>`;
       const [tx, ty] = pt(185, i * 18);
-      html += `<text x="${tx}" y="${ty}" fill="#efe8d8" font-size="17" font-family="Barlow Condensed,Arial Narrow,sans-serif" font-weight="700" text-anchor="middle" dominant-baseline="central">${n}</text>`;
+      html += `<text x="${tx}" y="${ty}" fill="#f5f2ff" font-size="17" font-family="Barlow Condensed,Arial Narrow,sans-serif" font-weight="700" text-anchor="middle" dominant-baseline="central">${n}</text>`;
     });
-    html += `<circle r="${C.R.obull}" fill="#2e9b5c"/><circle r="${C.R.bull}" fill="#d8443a"/>`;
+    html += `<circle r="${C.R.obull}" fill="#8f6bff"/><circle r="${C.R.bull}" fill="#c4ff3d"/>`;
     html += `<g id="padMark"></g>`;
     svg.innerHTML = html;
     svg.addEventListener('click', e => {
@@ -497,7 +497,7 @@
       }
       if (padMod && d.n && d.n !== 25) d = C.dart(d.n, padMod);
       if (padMod === 3 && d.n === 25) d = C.dart(25, 2);
-      $('#padMark').innerHTML = `<circle cx="${q.x}" cy="${q.y}" r="6" fill="#f0b54a" stroke="#000" stroke-width="2"/>`;
+      $('#padMark').innerHTML = `<circle cx="${q.x}" cy="${q.y}" r="6" fill="#ffc53d" stroke="#000" stroke-width="2"/>`;
       submitPad(d);
     });
   }
@@ -723,7 +723,7 @@
     if (Hinv) {
       const toPx = (bx, by) => { const [vx, vy] = C.applyH(Hinv, bx, by); const [u, v] = v2d(vx, vy); return [u * W, v * Hh]; };
       ctx.lineWidth = 1.2 * dpr;
-      ctx.strokeStyle = calibrating ? 'rgba(240,181,74,.95)' : 'rgba(239,232,216,.38)';
+      ctx.strokeStyle = calibrating ? 'rgba(255,197,61,.95)' : 'rgba(61,228,255,.45)';
       for (const r of [C.R.bull, C.R.obull, C.R.tIn, C.R.tOut, C.R.dIn, C.R.dOut]) {
         ctx.beginPath();
         for (let k = 0; k <= 96; k++) { const a = k / 96 * Math.PI * 2; const [x, y] = toPx(r * Math.sin(a), -r * Math.cos(a)); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
@@ -739,14 +739,14 @@
       ctx.stroke();
       if (calibrating) {
         ctx.font = `700 ${13 * dpr}px Barlow Condensed, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        C.SEG.forEach((n, i) => { const a = i * 18 * Math.PI / 180; const [x, y] = toPx(190 * Math.sin(a), -190 * Math.cos(a)); ctx.fillStyle = 'rgba(240,181,74,.95)'; ctx.fillText(n, x, y); });
+        C.SEG.forEach((n, i) => { const a = i * 18 * Math.PI / 180; const [x, y] = toPx(190 * Math.sin(a), -190 * Math.cos(a)); ctx.fillStyle = 'rgba(255,197,61,.95)'; ctx.fillText(n, x, y); });
       }
     }
     if (calibrating && calDraft) {
       calDraft.forEach((p, i) => {
         const [dx, dy] = v2d(p[0], p[1]);
         const x = dx * W, y = dy * Hh;
-        ctx.beginPath(); ctx.arc(x, y, 14 * dpr, 0, Math.PI * 2); ctx.fillStyle = 'rgba(216,68,58,.35)'; ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, 14 * dpr, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,61,129,.35)'; ctx.fill();
         ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#fff'; ctx.stroke();
         ctx.beginPath(); ctx.moveTo(x - 5 * dpr, y); ctx.lineTo(x + 5 * dpr, y); ctx.moveTo(x, y - 5 * dpr); ctx.lineTo(x, y + 5 * dpr); ctx.stroke();
         ctx.fillStyle = '#fff'; ctx.font = `800 ${14 * dpr}px Barlow Condensed, sans-serif`; ctx.textAlign = 'center';
@@ -760,7 +760,7 @@
         ctx.save(); ctx.beginPath(); ctx.rect(lx, ly, L, L); ctx.clip();
         ctx.drawImage(video, p[0] * vw - zoomSrc / 2, p[1] * vh - zoomSrc / 2, zoomSrc, zoomSrc, lx, ly, L, L);
         ctx.restore();
-        ctx.strokeStyle = '#f0b54a'; ctx.lineWidth = 2 * dpr; ctx.strokeRect(lx, ly, L, L);
+        ctx.strokeStyle = '#ff3d81'; ctx.lineWidth = 2 * dpr; ctx.strokeRect(lx, ly, L, L);
         ctx.beginPath(); ctx.moveTo(lx + L / 2, ly + 6 * dpr); ctx.lineTo(lx + L / 2, ly + L - 6 * dpr); ctx.moveTo(lx + 6 * dpr, ly + L / 2); ctx.lineTo(lx + L - 6 * dpr, ly + L / 2); ctx.stroke();
       }
     }
@@ -773,7 +773,7 @@
         const [dx, dy] = v2d(img[0], img[1]);
         const x = dx * W, y = dy * Hh;
         ctx.beginPath(); ctx.arc(x, y, 7 * dpr, 0, Math.PI * 2);
-        ctx.fillStyle = d.bot ? '#5ab0f0' : d.manual ? 'rgba(147,161,152,.8)' : '#f0b54a'; ctx.fill();
+        ctx.fillStyle = d.bot ? '#3de4ff' : d.manual ? 'rgba(169,163,207,.85)' : '#ff3d81'; ctx.fill();
         ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#000'; ctx.stroke();
         ctx.font = `800 ${15 * dpr}px Barlow Condensed, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
         ctx.lineWidth = 4 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(`${i + 1}: ${d.label}`, x + 11 * dpr, y);
