@@ -313,7 +313,8 @@
   function editDart(i, d) {
     snapshot();
     if (advance) advance.until = performance.now() + ADV_MS; // corrected: give the full time again
-    if (G.visit[i] && G.visit[i].auto && d.v === 0) detector.learnPhantom(); // camera saw a dart that was none
+    if (G.visit[i] && G.visit[i].auto && !G.visit[i].filled && d.v === 0) detector.learnPhantom(); // camera saw a dart that was none
+    if (G.visit[i] && G.visit[i].filled && d.v > 0) detector.learnMiss(d); // a dart we did not see
     G.visit[i] = Object.assign({}, d, { manual: true });
     G.visit = G.visit.slice(0, 3);
     afterChange(false);
@@ -351,6 +352,19 @@
       }
     }
     persist(); render();
+  }
+
+  /** Darts were pulled although fewer than three were counted: the others went out (or were not seen). */
+  function finishVisitEarly() {
+    if (!G || G.over || visitState().done) return;
+    const k = 3 - G.visit.length;
+    snapshot();
+    for (let i = 0; i < k; i++) G.visit.push(Object.assign(C.dart(0, 0), { auto: true, filled: true }));
+    const st = visitState();
+    toast((k === 1 ? '1 Dart' : k + ' Darts') + ' nicht im Board – als daneben gezählt. Antippen zum Korrigieren.', 4000);
+    sfx.miss();
+    say(k === 1 ? 'Ein Dart daneben.' : k + ' Darts daneben.', callScore(st.sum));
+    afterChange(false);
   }
 
   /** Commit current visit and go to next player (or next leg / end of match). */
@@ -1062,7 +1076,17 @@
 
     // armed: something moved since the last decision. Changes that appear without any movement
     // (light drift, auto-exposure) are absorbed and never counted as darts.
-    let armed = false, paused = false, cand = null;
+    // personSeen: someone (not just a dart) was in front of the board since the last decision.
+    let armed = false, paused = false, cand = null, personSeen = false;
+    /** Are the darts of the current visit gone from where they were counted? */
+    function visitPulled(cur, P) {
+      const spots = G.visit.filter(d => d.img).map(d => d.img.slice());
+      if (!spots.length) return false;
+      const keep = pullSpots; pullSpots = spots;
+      const gone = dartsGone(cur, P);
+      pullSpots = keep;
+      return gone !== false;
+    }
     function tick(now) {
       if (!stream || calibrating || recalBusy || !H || video.readyState < 2 || !G || G.over) return;
       if (isBotTurn() || !$('#padSheet').hidden || !$('#modal').hidden) { paused = true; return; }
@@ -1093,6 +1117,7 @@
       self.info = { ok: tr.ok, inl: +tr.inl.toFixed(2), err: +tr.err.toFixed(1), raw: [+tr.dx.toFixed(1), +tr.dy.toFixed(1)], cam: cam.map(v => +v.toFixed(1)), motion: m.count, stable, armed, thr: P.motion };
       if (m.count > P.motion) {
         stable = 0; cand = null;
+        if (m.count > P.maxArea * 0.35) personSeen = true; // far more than a dart: a person/arm
         if (m.count >= Math.max(P.motion * 2, P.minArea * 0.6)) armed = true;
         if (!pulling) setStatus('motion', 'Bewegung …');
         return;
@@ -1115,7 +1140,7 @@
       if (pulling) {
         const gone = dartsGone(cur, P);
         if (gone === true || (gone === null && armed && ch.count >= P.minArea)) {
-          ref = copy(cur); emptyRef = copy(cur); stable = 0; armed = false; cand = null; self.lastBin = null; pullSpots = [];
+          ref = copy(cur); emptyRef = copy(cur); stable = 0; armed = false; cand = null; self.lastBin = null; pullSpots = []; personSeen = false;
           pulling = false;
           if (settings.autoNext && G && visitState().done && !isBotTurn()) { nextTurn(); toast('Darts gezogen – nächster Spieler'); }
           pulling = G ? visitState().done : false;
@@ -1127,8 +1152,16 @@
         return;
       }
 
+      // Someone was at the board and the darts counted so far are gone again: they pulled before three
+      // darts were counted, so the rest went out. Finish the visit instead of giving the next throw to them.
+      if (personSeen && emptyRef && G.visit.length && !visitState().done && visitPulled(cur, P)) {
+        ref = copy(cur); emptyRef = copy(cur); stable = 0; armed = false; cand = null; personSeen = false; self.lastBin = null; self.preview = [];
+        finishVisitEarly();
+        return;
+      }
+
       if (ch.count < P.minArea) {
-        bigSince = 0; cand = null; armed = false; if (self.preview.length) { self.preview = []; drawOverlay(); }
+        bigSince = 0; cand = null; armed = false; personSeen = false; if (self.preview.length) { self.preview = []; drawOverlay(); }
         if (stable % 8 === 0) {
           blend(ref, cur); // follow slow light changes
           if (G.visit.length === 0) emptyRef = copy(ref);
@@ -1143,12 +1176,14 @@
         const hs = ch.count <= P.maxArea ? C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3 - G.visit.length, tipPref: settings.tipPref, dirAt }) : [];
         if (hs.some(hh => !hh.unsure && hh.conf >= 0.5)) armed = true;
         else {
-          if (stable >= 12) { remember(hs.concat(hs.rejected || []), now); ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; self.preview = []; }
+          // Never take a picture with a person in it as the new reference (only after ~10 s of total calm,
+          // e.g. the light was switched on) – otherwise the pulled darts behind them go unnoticed.
+          if (stable >= 12 && (ch.count <= P.maxArea || stable >= 120)) { remember(hs.concat(hs.rejected || []), now); ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; self.preview = []; }
           return;
         }
       }
       if (ch.count > P.maxArea) {
-        cand = null;
+        cand = null; personSeen = true;
         if (!bigSince) bigSince = now;
         setStatus('motion', 'Zu viel Veränderung im Bild');
         if (now - bigSince > 2500) { bigSince = 0; armed = false; autoRecal(); }
@@ -1170,13 +1205,49 @@
           if (Math.max(Math.abs(cur[j] - emptyRef[j]), Math.abs(cur[j + 1] - emptyRef[j + 1]), Math.abs(cur[j + 2] - emptyRef[j + 2])) <= P.thr) back++;
         }
         if (tot && back / tot > 0.6) {
-          ref = copy(cur); stable = 0; armed = false; self.lastBin = null;
+          const pulledEarly = personSeen && G.visit.length > 0 && !visitState().done && visitPulled(cur, P);
+          ref = copy(cur); stable = 0; armed = false; self.lastBin = null; personSeen = false;
+          if (pulledEarly) { emptyRef = copy(cur); finishVisitEarly(); return; }
           setStatus('ready', 'Darts entfernt – kein Wurf');
           return;
         }
       }
       const left = 3 - G.visit.length;
-      const hits = C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: left, tipPref: settings.tipPref, dirAt });
+      let bin = ch.bin;
+      if (emptyRef && G.visit.length) {
+        // Where the picture is back to the empty board, a dart left (knocked out or moved), none arrived.
+        bin = new Uint8Array(ch.bin);
+        for (let i = 0; i < PW * PH; i++) {
+          if (!bin[i]) continue;
+          const j = i * 4;
+          if (Math.max(Math.abs(cur[j] - emptyRef[j]), Math.abs(cur[j + 1] - emptyRef[j + 1]), Math.abs(cur[j + 2] - emptyRef[j + 2])) <= P.thr * 0.8) bin[i] = 0;
+        }
+        bin = C.denoise(bin, PW, PH).bin;
+      }
+      let hits = C.findDarts(bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3, tipPref: settings.tipPref, dirAt });
+      const rejected = hits.rejected;
+      // One throw = one dart. A second find in the same check only counts when it is a clear, separate dart
+      // (two quick throws); bits next to a dart already in the board are that dart being nudged.
+      const old = G.visit.filter(d => d.img).map(d => v2p(d.img[0], d.img[1]));
+      const near = (h, list, r) => list.some(([x, y]) => Math.hypot(h.x - x, h.y - y) < r);
+      const radius = h => Math.max(6, (h.exp ? h.exp.len : PW / 20) * 0.7);
+      const kept = [];
+      for (const h of hits) {
+        const clear = !h.unsure && h.conf >= 0.5;
+        if (near(h, kept.map(o => [o.x, o.y]), radius(h))) continue;          // same dart in two pieces
+        if (near(h, old, radius(h)) && !clear && h.area < P.minArea * 1.5) continue; // an old dart nudged a bit
+        if (kept.length && (!clear || near(h, old, radius(h)))) { rejected.push(h); continue; }
+        kept.push(h);
+      }
+      hits = kept.slice(0, left);
+      hits.rejected = rejected;
+      // A throw happened (movement, nobody at the board) and a real blob appeared, but it does not look like
+      // a dart: count it anyway as "please check" rather than losing the dart.
+      if (!hits.length && !personSeen) {
+        const big = rejected.filter(r => r.area >= P.minArea * 0.7 && !near(r, old, radius(r))).sort((a, b) => b.area - a.area)[0];
+        if (big) { big.unsure = true; big.conf = Math.min(big.conf || 0, 0.2); hits.push(big); rejected.splice(rejected.indexOf(big), 1); }
+      }
+      personSeen = false;
       const ref0 = ref;
       ref = copy(cur); stable = 0; armed = false; cooldownUntil = now + 300; self.preview = [];
       remember(hits.rejected, now);
@@ -1192,6 +1263,7 @@
         let ux = hit.x - 0.5 - hit.axis.cx, uy = hit.y - 0.5 - hit.axis.cy; const ul = Math.hypot(ux, uy);
         if (ul < 2) { ux = -hit.exp.ex; uy = -hit.exp.ey; } else { ux /= ul; uy /= ul; }
         const full = hit.exp.len * 140 / 110;
+        if (!hit.axis) continue;
         const [nx2, ny2] = C.traceTip(cur, ref0, PW, PH, hit.x - 0.5, hit.y - 0.5, ux, uy, Math.round(Math.max(3, Math.min(full * 0.5, full - hit.length + 4))), Math.max(10, P.thr * 0.45), offT);
         hit.x = nx2 + 0.5; hit.y = ny2 + 0.5;
       }

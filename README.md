@@ -37,6 +37,7 @@ Differenzbild gegenüber einem Referenzbild des Boards → größter veränderte
 - **Live-Vorschau:** Gelber Ring „T20?“, sobald ein Dart steckt; nach ca. 0,5 s bestätigt.
 - **Lernt aus Korrekturen:** Von Hand eingetippte, übersehene Darts machen die Erkennung empfindlicher bzw. lassen solche Formen zu; auf „Miss“ korrigierte Phantom-Darts machen sie strenger. Zurücksetzen in den Einstellungen.
 - **Bildstabilisierung:** Wackeln und Verrutschen des Handys werden bei jedem Bild ausgeglichen.
+- **Dart-Zählung:** Werden die Darts gezogen, bevor drei gezählt sind (einer ging ins Aus oder wurde übersehen), zählt die App die fehlenden als „daneben“ (Miss) und gibt an den nächsten Spieler ab – statt den nächsten Wurf dem falschen Spieler zu geben. Ein angestoßener Dart zählt nicht als neuer Dart; ein Bild mit einer Person davor wird nie als Referenz übernommen.
 
 ## Sprüche
 Lob bei Triple 20 und Triple 19, Lästern bei 1, 5 und daneben – aber nur, solange kein Finish möglich ist. Abschaltbar in den Einstellungen.
