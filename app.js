@@ -610,6 +610,7 @@
 
   // ---------------- Calibration ----------------
   // Stored as 4 normalized image points [[x,y]...] for 20, 6, 3, 11.
+  let camShift = [0, 0]; // live camera shift vs. calibration (video-normalised), for drawing only
   let needMask = true; // detection mask must be rebuilt (calibration, zoom or size changed)
   let calib = store.get('calib', null);
   let H = null, Hinv = null; // image(norm) -> board(mm), board -> image
@@ -721,7 +722,8 @@
       ctx.drawImage(detector.debugCanvas(), 0, 0, W, Hh); ctx.globalAlpha = 1;
     }
     if (Hinv) {
-      const toPx = (bx, by) => { const [vx, vy] = C.applyH(Hinv, bx, by); const [u, v] = v2d(vx, vy); return [u * W, v * Hh]; };
+      const sh = calibrating ? [0, 0] : camShift;
+      const toPx = (bx, by) => { const [vx, vy] = C.applyH(Hinv, bx, by); const [u, v] = v2d(vx + sh[0], vy + sh[1]); return [u * W, v * Hh]; };
       ctx.lineWidth = 1.2 * dpr;
       ctx.strokeStyle = calibrating ? 'rgba(255,197,61,.95)' : 'rgba(61,228,255,.45)';
       for (const r of [C.R.bull, C.R.obull, C.R.tIn, C.R.tOut, C.R.dIn, C.R.dOut]) {
@@ -770,7 +772,7 @@
         let img = d.img;
         if (!img && d.bp && Hinv) img = C.applyH(Hinv, d.bp[0], d.bp[1]);
         if (!img) return;
-        const [dx, dy] = v2d(img[0], img[1]);
+        const [dx, dy] = v2d(img[0] + camShift[0], img[1] + camShift[1]);
         const x = dx * W, y = dy * Hh;
         ctx.beginPath(); ctx.arc(x, y, 7 * dpr, 0, Math.PI * 2);
         ctx.fillStyle = d.bot ? '#3de4ff' : d.manual ? 'rgba(169,163,207,.85)' : '#ff3d81'; ctx.fill();
@@ -793,6 +795,8 @@
     // emptyRef: the board without darts (taken while no darts of the current visit are in it).
     // pullSpots: where this visit's darts sit (video coords) – they must be gone before play goes on.
     let emptyRef = null, pullSpots = [], recalBusy = false;
+    // Stabilisation: every frame is lined up with the anchor (the picture the calibration belongs to).
+    let tracker = null, cam = [0, 0], trackBad = 0, camEdge = 1;
     let dbgCanvas = null, dbgCtx = null;
     const self = {
       lastBin: null,
@@ -829,7 +833,7 @@
           const [bx, by] = C.applyH(H, vx, vy);
           if (Math.hypot(bx, by) < 228) { mask[y * PW + x] = 1; maskCount++; } // whole board incl. number ring: flights of double darts hang out there
         }
-        needMask = false; ref = prev = null;
+        needMask = false; ref = prev = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
       }
       return !!mask;
     }
@@ -845,17 +849,14 @@
     function blend(a, b) { for (let i = 0; i < a.length; i++) a[i] = (a[i] * 3 + b[i]) >> 2; }
 
     const copy = px => new Uint8ClampedArray(px);
-    const changed = (a, b2, P) => C.denoise(C.diffMask(a, b2, mask, PW, PH, P.thr, null, C.meanOffset(a, b2, mask, PW, PH)).bin, PW, PH);
+    const changed = (a, b2, P) => C.denoise(C.diffMaskTol(a, b2, mask, PW, PH, P.thr, C.meanOffset(a, b2, mask, PW, PH), camEdge).bin, PW, PH);
 
-    /** Camera was bumped: move calibration, references and marks by (dx, dy) proc pixels. */
-    function applyShift(dx, dy) {
-      const cr = crop(), mx = dx / PW * cr.w, my = dy / PH * cr.w;
-      calib = calib.map(([x, y]) => [x + mx, y + my]); store.set('calib', calib); updateH();
-      const mv = q => [q[0] + mx, q[1] + my];
-      pullSpots = pullSpots.map(mv);
-      if (G) G.visit.forEach(d => { if (d.img) d.img = mv(d.img); });
-      if (emptyRef) emptyRef = C.shiftImage(emptyRef, PW, PH, dx, dy);
-      ref = prev = null; // taken fresh on the next frame, mask is rebuilt
+    /** The camera has settled somewhere else: move the calibration there and start a new anchor. */
+    function bake() {
+      const cr = crop(), mx = cam[0] / PW * cr.w, my = cam[1] / PH * cr.w;
+      calib = calib.map(([x, y]) => [x + mx, y + my]); store.set('calib', calib);
+      updateH(); // rebuilds mask, anchor and references on the next frame
+      emptyRef = null; cam = [0, 0]; camShift = [0, 0];
     }
 
     /** Bigger move: look for the board again in the current frame. */
@@ -871,13 +872,17 @@
           const cx = cv.getContext('2d', { willReadFrequently: true });
           cx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, W, Hc);
           const res = C.autoCalibrate(cx.getImageData(0, 0, W, Hc).data, W, Hc);
-          if (!res.error) {
-            calib = res.points.map(([x, y]) => d2v(x / W, y / Hc)); store.set('calib', calib); updateH();
-            ref = prev = null; emptyRef = null;
+          const found = res.error ? null : res.points.map(([x, y]) => d2v(x / W, y / Hc));
+          // Board still where the tracker says it is (someone was just standing in front): change nothing.
+          const off = found ? Math.max(...found.map(([x, y], i) => Math.hypot((x - calib[i][0] - camShift[0]) * vw, (y - calib[i][1] - camShift[1]) * vh))) : 1e9;
+          if (found && off < 6) {
+            setStatus(pulling ? 'pull' : 'ready', pulling ? 'Darts ziehen' : 'Bereit – wirf!');
+          } else if (found) {
+            calib = found; store.set('calib', calib); updateH();
+            ref = prev = null; emptyRef = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
             toast('Kamera hat sich bewegt – Board neu erkannt', 3000);
           } else {
             toast('Kamera hat sich bewegt. Bitte neu kalibrieren (Fadenkreuz oben rechts).', 5000);
-            ref = null;
           }
         } catch (e) { console.error(e); }
         recalBusy = false;
@@ -907,14 +912,22 @@
 
     // armed: something moved since the last decision. Changes that appear without any movement
     // (light drift, auto-exposure) are absorbed and never counted as darts.
-    let armed = false, paused = false, cand = null, shiftChecked = false;
+    let armed = false, paused = false, cand = null;
     function tick(now) {
       if (!stream || calibrating || recalBusy || !H || video.readyState < 2 || !G || G.over) return;
       if (isBotTurn() || !$('#padSheet').hidden || !$('#modal').hidden) { paused = true; return; }
       if (!ensureSize()) return;
       const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
       pctx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, PW, PH);
-      const cur = pctx.getImageData(0, 0, PW, PH).data;
+      const raw = pctx.getImageData(0, 0, PW, PH).data;
+      const L = C.luma(raw, PW, PH);
+      if (!tracker) { tracker = C.makeTracker(L, mask, PW, PH); cam = [0, 0]; trackBad = 0; }
+      const tr = tracker.track(L, cam);
+      if (tr.ok) { cam = [tr.dx, tr.dy]; trackBad = 0; camEdge = Math.max(camEdge, Math.ceil(Math.max(Math.abs(cam[0]), Math.abs(cam[1]))) + 2); } else trackBad++;
+      camShift = [cam[0] / PW * cr.w, cam[1] / PH * cr.w];
+      const cur = Math.abs(cam[0]) < 0.05 && Math.abs(cam[1]) < 0.05 ? raw : C.warpShift(raw, PW, PH, cam[0], cam[1]);
+      // Board out of reach of the tracker for a while and the picture is calm: find it again.
+      if (trackBad > 40 && !pulling && prev && changed(cur, prev, params()).count <= params().motion) { trackBad = -60; autoRecal(); return; }
       if (!ref) {
         ref = copy(cur); prev = copy(cur); stable = 0; armed = false; cand = null;
         if (!emptyRef && !pulling && G.visit.length === 0) emptyRef = copy(cur);
@@ -928,7 +941,7 @@
       const m = changed(cur, prev, P);
       prev = copy(cur);
       if (m.count > P.motion) {
-        stable = 0; cand = null; shiftChecked = false;
+        stable = 0; cand = null;
         if (m.count >= Math.max(P.motion * 2, P.minArea * 0.6)) armed = true;
         if (!pulling) setStatus('motion', 'Bewegung …');
         return;
@@ -938,17 +951,6 @@
       const ch = changed(cur, ref, P);
       self.lastBin = ch.bin;
       if (debugView) drawOverlay();
-
-      // Did the phone move? Check once per quiet phase when the picture changed noticeably.
-      if (!shiftChecked && ch.count >= P.minArea) {
-        shiftChecked = true;
-        const sh = C.estimateShift(cur, ref, mask, PW, PH, 10);
-        if ((sh.dx || sh.dy) && sh.score < sh.score0 * 0.7) {
-          if (Math.abs(sh.dx) >= 9 || Math.abs(sh.dy) >= 9) autoRecal();
-          else { applyShift(sh.dx, sh.dy); toast('Kamera leicht verrutscht – ausgeglichen', 2200); }
-          return;
-        }
-      }
 
       if (pulling) {
         const gone = dartsGone(cur, P);
@@ -971,6 +973,7 @@
           blend(ref, cur); // follow slow light changes
           if (G.visit.length === 0) emptyRef = copy(ref);
         }
+        if (stable >= 12 && G.visit.length === 0 && Math.hypot(cam[0], cam[1]) > 1.5) { bake(); return; }
         setStatus('ready', 'Bereit – wirf!');
         return;
       }

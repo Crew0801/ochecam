@@ -364,6 +364,183 @@
     return out;
   }
 
+  // ---------- Video stabilisation (camera shake on a tripod) ----------
+  /** Luma (0..255) of an RGBA frame. */
+  function luma(px, w, h) {
+    const n = w * h, L = new Float32Array(n);
+    for (let i = 0, j = 0; i < n; i++, j += 4) L[i] = (px[j] * 77 + px[j + 1] * 150 + px[j + 2] * 29) / 256;
+    return L;
+  }
+  function downsample(L, w, h, f) {
+    const W = Math.floor(w / f), Hh = Math.floor(h / f), out = new Float32Array(W * Hh);
+    for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) {
+      let s = 0;
+      for (let yy = 0; yy < f; yy++) { const row = (y * f + yy) * w + x * f; for (let xx = 0; xx < f; xx++) s += L[row + xx]; }
+      out[y * W + x] = s / (f * f);
+    }
+    return out;
+  }
+  function bil(L, w, h, x, y) {
+    if (x < 0) x = 0; else if (x > w - 1.001) x = w - 1.001;
+    if (y < 0) y = 0; else if (y > h - 1.001) y = h - 1.001;
+    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+    return (L[i] * (1 - fx) + L[i + 1] * fx) * (1 - fy) + (L[i + w] * (1 - fx) + L[i + w + 1] * fx) * fy;
+  }
+  /** Textured sample points inside the mask (gradients are what pins the position down). */
+  function trackPoints(L, mask, w, h, step, border) {
+    const pts = [];
+    for (let y = border; y < h - border; y += step) for (let x = border; x < w - border; x += step) {
+      const p = y * w + x;
+      if (mask && !mask[p]) continue;
+      const g = Math.abs(L[p + 1] - L[p - 1]) + Math.abs(L[p + w] - L[p - w]);
+      if (g >= 6) pts.push(p);
+    }
+    return pts;
+  }
+  /**
+   * Lucas-Kanade for a pure translation s with cur(p + s) ≈ ref(p) + brightness offset.
+   * Pixels that really changed (darts, a hand, a person) are left out as outliers.
+   */
+  function lkShift(refL, curL, w, h, pts, s0, iters) {
+    let dx = s0[0], dy = s0[1], inl = 0, err = 99;
+    for (let it = 0; it < iters; it++) {
+      const lim = it < 2 ? 70 : it < 4 ? 40 : 25;
+      let off = 0, c = 0;
+      for (let k = 0; k < pts.length; k += 3) {
+        const p = pts[k], r = bil(curL, w, h, p % w + dx, ((p / w) | 0) + dy) - refL[p];
+        if (Math.abs(r) < 90) { off += r; c++; }
+      }
+      off = c ? off / c : 0;
+      let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0, e = 0;
+      inl = 0;
+      for (const p of pts) {
+        const r = bil(curL, w, h, p % w + dx, ((p / w) | 0) + dy) - refL[p] - off;
+        if (Math.abs(r) > lim) continue;
+        const gx = (refL[p + 1] - refL[p - 1]) / 2, gy = (refL[p + w] - refL[p - w]) / 2;
+        inl++; e += Math.abs(r);
+        a11 += gx * gx; a12 += gx * gy; a22 += gy * gy; b1 += gx * r; b2 += gy * r;
+      }
+      err = inl ? e / inl : 99;
+      const det = a11 * a22 - a12 * a12;
+      if (inl < 20 || det <= 1e-6) break;
+      let ux = -(a22 * b1 - a12 * b2) / det, uy = -(a11 * b2 - a12 * b1) / det;
+      ux = Math.max(-2, Math.min(2, ux)); uy = Math.max(-2, Math.min(2, uy));
+      dx += ux; dy += uy;
+      if (it >= 4 && Math.abs(ux) < 0.02 && Math.abs(uy) < 0.02) break;
+    }
+    return { dx, dy, inl: pts.length ? inl / pts.length : 0, err };
+  }
+  /**
+   * Tracker against a fixed anchor frame. track(curL, guess) returns the camera shift
+   * {dx, dy, ok} in pixels: the board now appears at anchor + (dx, dy).
+   * Fast path: Lucas-Kanade from the last position. If that fails (a hard knock), a coarse search
+   * on a 4× smaller image finds the rough position first (up to ±range pixels).
+   */
+  function makeTracker(anchorL, mask, w, h, range) {
+    range = range || 36;
+    const pts = trackPoints(anchorL, mask, w, h, 2, 2);
+    const f = 4, cw = Math.floor(w / f), ch = Math.floor(h / f);
+    const cRef = downsample(anchorL, w, h, f);
+    let cMask = null;
+    if (mask) { cMask = new Uint8Array(cw * ch); for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) cMask[y * cw + x] = mask[(y * f + (f >> 1)) * w + x * f + (f >> 1)]; }
+    const cPts = trackPoints(cRef, cMask, cw, ch, 1, 2);
+    const good = r => r.inl >= 0.75 && r.err <= 9, great = r => r.inl >= 0.86 && r.err <= 7;
+    const better = (a, b) => !a || (b.inl - b.err * 0.02 > a.inl - a.err * 0.02) ? b : a;
+    function coarse(curL, guess) {
+      const cCur = downsample(curL, w, h, f), R = Math.ceil(range / f);
+      const gx = Math.round(guess[0] / f), gy = Math.round(guess[1] / f);
+      let best = null;
+      for (let sy = gy - R; sy <= gy + R; sy++) for (let sx = gx - R; sx <= gx + R; sx++) {
+        let m = 0, c = 0;
+        for (let k = 0; k < cPts.length; k += 2) {
+          const p = cPts[k], x = p % cw + sx, y = ((p / cw) | 0) + sy;
+          if (x < 0 || y < 0 || x >= cw || y >= ch) continue;
+          m += cCur[y * cw + x] - cRef[p]; c++;
+        }
+        if (c < cPts.length * 0.3) continue;
+        m /= c;
+        let s = 0;
+        for (let k = 0; k < cPts.length; k += 2) {
+          const p = cPts[k], x = p % cw + sx, y = ((p / cw) | 0) + sy;
+          if (x < 0 || y < 0 || x >= cw || y >= ch) continue;
+          s += Math.min(40, Math.abs(cCur[y * cw + x] - cRef[p] - m));
+        }
+        s /= c;
+        if (!best || s < best.s) best = { s, sx, sy };
+      }
+      if (!best) return null;
+      const r = lkShift(cRef, cCur, cw, ch, cPts, [best.sx, best.sy], 6);
+      return [r.dx * f, r.dy * f];
+    }
+    function coarseLK(curL, guess) {
+      const cCur = downsample(curL, w, h, f);
+      const r = lkShift(cRef, cCur, cw, ch, cPts, [guess[0] / f, guess[1] / f], 10);
+      return [r.dx * f, r.dy * f];
+    }
+    return {
+      points: pts.length,
+      track(curL, guess) {
+        guess = guess || [0, 0];
+        // Fine from the last position, then coarse-to-fine, then a full search (hard knock).
+        let r = lkShift(anchorL, curL, w, h, pts, guess, 8);
+        if (!great(r)) r = better(r, lkShift(anchorL, curL, w, h, pts, coarseLK(curL, guess), 10));
+        if (!great(r)) { const c = coarse(curL, guess); if (c) r = better(r, lkShift(anchorL, curL, w, h, pts, c, 10)); }
+        return { dx: r.dx, dy: r.dy, ok: good(r), inl: r.inl, err: r.err };
+      }
+    };
+  }
+  /** RGBA frame resampled so it lines up with the anchor: out(p) = px(p + (dx, dy)). */
+  function warpShift(px, w, h, dx, dy) {
+    const out = new Uint8ClampedArray(px.length);
+    const ix = Math.floor(dx), iy = Math.floor(dy), fx = dx - ix, fy = dy - iy;
+    const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.min(h - 1, Math.max(0, y + iy)), y1 = Math.min(h - 1, Math.max(0, y + iy + 1));
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.min(w - 1, Math.max(0, x + ix)), x1 = Math.min(w - 1, Math.max(0, x + ix + 1));
+        const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c2 = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4, o = (y * w + x) * 4;
+        out[o] = px[a] * w00 + px[b] * w10 + px[c2] * w01 + px[d] * w11;
+        out[o + 1] = px[a + 1] * w00 + px[b + 1] * w10 + px[c2 + 1] * w01 + px[d + 1] * w11;
+        out[o + 2] = px[a + 2] * w00 + px[b + 2] * w10 + px[c2 + 2] * w01 + px[d + 2] * w11;
+        out[o + 3] = 255;
+      }
+    }
+    return out;
+  }
+  /**
+   * Like diffMask, but a pixel only counts as changed if its colour lies outside the range b takes
+   * within half a pixel (plus thr). Left-over sub-pixel jitter and blur at edges and wires stay
+   * inside that range and are ignored; a dart brings new colour and still shows.
+   * The range only covers half a pixel, so thin dart shafts are not swallowed.
+   */
+  function diffMaskTol(a, b, mask, w, h, thr, off, border) {
+    const n = w * h, bin = new Uint8Array(n);
+    const o = off || [0, 0, 0];
+    const m = Math.max(1, border | 0); // frame edge that a shifted picture does not cover
+    let count = 0;
+    for (let y = m; y < h - m; y++) for (let x = m; x < w - m; x++) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      const j = i * 4;
+      if (Math.abs(a[j] - o[0] - b[j]) <= thr && Math.abs(a[j + 1] - o[1] - b[j + 1]) <= thr && Math.abs(a[j + 2] - o[2] - b[j + 2]) <= thr) continue;
+      let worst = 0;
+      for (let c = 0; c < 3; c++) {
+        const v = a[i * 4 + c] - o[c];
+        // Range of b within ±half a pixel (midpoints towards the 8 neighbours).
+        const q0 = b[i * 4 + c];
+        let lo = q0, hi = q0;
+        for (let yy = -1; yy <= 1; yy++) for (let xx = -1; xx <= 1; xx++) {
+          const q = (q0 + b[(i + yy * w + xx) * 4 + c]) * 0.5;
+          if (q < lo) lo = q; if (q > hi) hi = q;
+        }
+        const d = v < lo ? lo - v : v > hi ? v - hi : 0;
+        if (d > worst) worst = d;
+      }
+      if (worst > thr) { bin[i] = 1; count++; }
+    }
+    return { bin, count };
+  }
+
   // ---------- Automatic calibration ----------
   /** 0 = other, 1 = board red, 2 = board green (hue/chroma based, tolerant to lighting). */
   function boardColor(r, g, b) {
@@ -655,7 +832,7 @@
 
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;
