@@ -307,6 +307,63 @@
     };
   }
 
+  // ---------- Camera movement ----------
+  /**
+   * How far the picture moved from frame b to frame a (a(x) ≈ b(x - d)), searched within ±R pixels.
+   * Returns {dx, dy, score, score0}: mean luma error at the best shift and at no shift.
+   */
+  function estimateShift(a, b, mask, w, h, R) {
+    R = R || 10;
+    const step = 3, idx = [];
+    for (let y = R; y < h - R; y += step) for (let x = R; x < w - R; x += step) if (mask[y * w + x]) idx.push(y * w + x);
+    const n = idx.length;
+    if (n < 50) return { dx: 0, dy: 0, score: 0, score0: 0 };
+    const lum = (px, i) => (px[i * 4] * 77 + px[i * 4 + 1] * 150 + px[i * 4 + 2] * 29) >> 8;
+    const la = new Float32Array(n);
+    let ma = 0;
+    for (let k = 0; k < n; k++) { la[k] = lum(a, idx[k]); ma += la[k]; }
+    ma /= n;
+    const lb = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) lb[i] = lum(b, i);
+    const cost = (dx, dy) => {
+      const off = dy * w + dx;
+      let mb = 0;
+      for (let k = 0; k < n; k++) mb += lb[idx[k] - off];
+      mb /= n;
+      let s = 0;
+      for (let k = 0; k < n; k++) s += Math.abs(la[k] - ma - lb[idx[k] - off] + mb);
+      return s / n;
+    };
+    const score0 = cost(0, 0);
+    let best = { dx: 0, dy: 0, score: score0 };
+    for (let dy = -R; dy <= R; dy += 2) for (let dx = -R; dx <= R; dx += 2) {
+      const c = cost(dx, dy);
+      if (c < best.score) best = { dx, dy, score: c };
+    }
+    const c0 = best;
+    for (let dy = c0.dy - 1; dy <= c0.dy + 1; dy++) for (let dx = c0.dx - 1; dx <= c0.dx + 1; dx++) {
+      if (Math.abs(dx) > R || Math.abs(dy) > R) continue;
+      const c = cost(dx, dy);
+      if (c < best.score) best = { dx, dy, score: c };
+    }
+    best.score0 = score0;
+    return best;
+  }
+
+  /** Copy of an RGBA image moved by (dx, dy) pixels; uncovered borders repeat the edge. */
+  function shiftImage(px, w, h, dx, dy) {
+    const out = new Uint8ClampedArray(px.length);
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(h - 1, Math.max(0, y - dy));
+      for (let x = 0; x < w; x++) {
+        const sx = Math.min(w - 1, Math.max(0, x - dx));
+        const i = (y * w + x) * 4, j = (sy * w + sx) * 4;
+        out[i] = px[j]; out[i + 1] = px[j + 1]; out[i + 2] = px[j + 2]; out[i + 3] = 255;
+      }
+    }
+    return out;
+  }
+
   // ---------- Automatic calibration ----------
   /** 0 = other, 1 = board red, 2 = board green (hue/chroma based, tolerant to lighting). */
   function boardColor(r, g, b) {
@@ -598,7 +655,7 @@
 
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

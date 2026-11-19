@@ -27,13 +27,28 @@
     clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), ms);
   }
   let deVoice = null;
+  // Voices that sound natural (neural/online/premium) are preferred; the viewer can pick any German voice.
+  const voiceQuality = v => (/natural|neural|online|premium|enhanced|wavenet|studio/i.test(v.name) ? 6 : 0)
+    + (/google/i.test(v.name) ? 3 : 0) + (v.localService === false ? 1 : 0)
+    + (/katja|conrad|amala|seraphina|florian|anna|petra|markus|helena|hedda|stefan|yannick|viktoria/i.test(v.name) ? 1 : 0)
+    - (/compact|eloquence|espeak/i.test(v.name) ? 4 : 0);
+  function germanVoices() {
+    if (!('speechSynthesis' in window)) return [];
+    return speechSynthesis.getVoices().filter(v => /^de/i.test(v.lang)).sort((a, b) => voiceQuality(b) - voiceQuality(a));
+  }
   function pickVoice() {
-    if (!('speechSynthesis' in window)) return;
-    const vs = speechSynthesis.getVoices().filter(v => /^de/i.test(v.lang));
-    // Prefer natural-sounding voices (online/neural), then any German voice.
-    const score = v => (/natural|neural|online|premium|enhanced/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 3 : 0)
-      + (/katja|conrad|amala|anna|petra|markus|helena|hedda|stefan|yannick/i.test(v.name) ? 1 : 0) + (v.localService ? 0 : 1);
-    deVoice = vs.sort((a, b) => score(b) - score(a))[0] || null;
+    const vs = germanVoices();
+    deVoice = (settings.voiceName && vs.find(v => v.name === settings.voiceName)) || vs[0] || null;
+    fillVoiceSelect();
+  }
+  function fillVoiceSelect() {
+    const sel = document.getElementById('voiceSel'); if (!sel) return;
+    const vs = germanVoices();
+    sel.innerHTML = '<option value="">Automatisch (beste verfügbare)</option>' + vs.map(v =>
+      `<option value="${v.name.replace(/"/g, '&quot;')}">${voiceQuality(v) >= 4 ? '★ ' : ''}${v.name.replace(/</g, '&lt;')}</option>`).join('');
+    sel.value = settings.voiceName || '';
+    const hint = document.getElementById('voiceHint');
+    if (hint) hint.hidden = vs.some(v => voiceQuality(v) >= 4);
   }
   if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
   /** Speak one or more phrases in order (replaces anything still being said). */
@@ -43,7 +58,7 @@
       speechSynthesis.cancel();
       for (const text of parts.filter(Boolean)) {
         const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'de-DE'; if (deVoice) u.voice = deVoice; u.rate = 1.0; u.pitch = 1.0;
+        u.lang = (deVoice && deVoice.lang) || 'de-DE'; if (deVoice) u.voice = deVoice; u.rate = settings.voiceRate || 1.0; u.pitch = 1.0;
         speechSynthesis.speak(u);
       }
     } catch {}
@@ -124,6 +139,13 @@
       }
       if (el < 2600) requestAnimationFrame(frame); else cv.remove();
     })(t0);
+  }
+  /** How a caller announces a visit total. */
+  function callScore(n) {
+    if (n === 180) return 'Einhundertachtzig!';
+    if (n === 0) return 'Keine Punkte.';
+    if (n >= 100) return n + '!';
+    return n + '.';
   }
   const spokenDart = d => d.v === 0 ? 'Daneben' : d.n === 25 ? (d.m === 2 ? 'Bull' : 'fünfundzwanzig')
     : (d.m === 3 ? 'Triple ' : d.m === 2 ? 'Doppel ' : '') + d.n;
@@ -249,7 +271,7 @@
       const dartWord = spokenDart(last);
       if (st.bust) say(dartWord, 'Überworfen! Keine Punkte.');
       else if (st.win) say(dartWord, 'Game shot! ' + name + ' gewinnt das Leg.');
-      else if (st.done) say(dartWord, st.sum === 180 ? 'Einhundertachtzig!' : st.sum === 0 ? 'Keine Punkte.' : 'Insgesamt ' + st.sum + '.');
+      else if (st.done) say(dartWord, callScore(st.sum));
       else say(dartWord);
     }
     // Bot darts are virtual: nothing to pull from the board.
@@ -511,6 +533,7 @@
   $('#btnNext').onclick = () => {
     // If camera-detected darts are still in the board, the next change is them being pulled.
     const dartsInBoard = G && G.visit.some(d => d.auto);
+    if (dartsInBoard) detector.waitForPull();
     nextTurn(); detector.rearm(dartsInBoard, false);
   };
   $('#btnMenu').onclick = () => showSetup();
@@ -767,11 +790,18 @@
     const pctx = proc.getContext('2d', { willReadFrequently: true });
     let PW = 0, PH = 0, mask = null, maskCount = 0;
     let ref = null, prev = null, stable = 0, pulling = false, bigSince = 0, cooldownUntil = 0;
+    // emptyRef: the board without darts (taken while no darts of the current visit are in it).
+    // pullSpots: where this visit's darts sit (video coords) – they must be gone before play goes on.
+    let emptyRef = null, pullSpots = [], recalBusy = false;
     let dbgCanvas = null, dbgCtx = null;
     const self = {
       lastBin: null,
-      reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; pulling = G ? visitState().done : false; },
-      waitForPull() { pulling = true; if (stream) setStatus('pull', 'Darts ziehen'); },
+      reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; emptyRef = null; pulling = G ? visitState().done : false; },
+      waitForPull() {
+        pulling = true;
+        pullSpots = G ? G.visit.filter(d => d.img).map(d => d.img.slice()) : [];
+        if (stream) setStatus('pull', 'Darts ziehen');
+      },
       get pulling() { return pulling; },
       rearm(done, newRef) { pulling = !!done; stable = 0; if (newRef) ref = null; if (stream && !calibrating && !isBotTurn()) pulling ? setStatus('pull', 'Darts ziehen') : setStatus('ready', 'Bereit – wirf!'); },
       debugCanvas() {
@@ -797,7 +827,7 @@
         for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++) {
           const [vx, vy] = d2v((x + 0.5) / PW, (y + 0.5) / PH);
           const [bx, by] = C.applyH(H, vx, vy);
-          if (Math.hypot(bx, by) < 182) { mask[y * PW + x] = 1; maskCount++; }
+          if (Math.hypot(bx, by) < 228) { mask[y * PW + x] = 1; maskCount++; } // whole board incl. number ring: flights of double darts hang out there
         }
         needMask = false; ref = prev = null;
       }
@@ -814,59 +844,146 @@
     }
     function blend(a, b) { for (let i = 0; i < a.length; i++) a[i] = (a[i] * 3 + b[i]) >> 2; }
 
+    const copy = px => new Uint8ClampedArray(px);
+    const changed = (a, b2, P) => C.denoise(C.diffMask(a, b2, mask, PW, PH, P.thr, null, C.meanOffset(a, b2, mask, PW, PH)).bin, PW, PH);
+
+    /** Camera was bumped: move calibration, references and marks by (dx, dy) proc pixels. */
+    function applyShift(dx, dy) {
+      const cr = crop(), mx = dx / PW * cr.w, my = dy / PH * cr.w;
+      calib = calib.map(([x, y]) => [x + mx, y + my]); store.set('calib', calib); updateH();
+      const mv = q => [q[0] + mx, q[1] + my];
+      pullSpots = pullSpots.map(mv);
+      if (G) G.visit.forEach(d => { if (d.img) d.img = mv(d.img); });
+      if (emptyRef) emptyRef = C.shiftImage(emptyRef, PW, PH, dx, dy);
+      ref = prev = null; // taken fresh on the next frame, mask is rebuilt
+    }
+
+    /** Bigger move: look for the board again in the current frame. */
+    function autoRecal(reason) {
+      if (recalBusy) return;
+      recalBusy = true;
+      setStatus('motion', 'Kamera bewegt – suche Board …');
+      setTimeout(() => {
+        try {
+          const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
+          const W = 560, Hc = Math.round(W * vh / vw);
+          const cv = document.createElement('canvas'); cv.width = W; cv.height = Hc;
+          const cx = cv.getContext('2d', { willReadFrequently: true });
+          cx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, W, Hc);
+          const res = C.autoCalibrate(cx.getImageData(0, 0, W, Hc).data, W, Hc);
+          if (!res.error) {
+            calib = res.points.map(([x, y]) => d2v(x / W, y / Hc)); store.set('calib', calib); updateH();
+            ref = prev = null; emptyRef = null;
+            toast('Kamera hat sich bewegt – Board neu erkannt', 3000);
+          } else {
+            toast('Kamera hat sich bewegt. Bitte neu kalibrieren (Fadenkreuz oben rechts).', 5000);
+            ref = null;
+          }
+        } catch (e) { console.error(e); }
+        recalBusy = false;
+      }, 30);
+    }
+
+    /** Are this visit's darts gone (board looks like before the visit again where they were)? */
+    function dartsGone(cur, P) {
+      if (!emptyRef) return null;
+      const e = changed(cur, emptyRef, P);
+      if (e.count > P.maxArea) return false; // someone is still in front of the board
+      if (pullSpots.length) {
+        const cr = crop(), rad = Math.max(4, Math.round(PW / 60));
+        for (const [vx, vy] of pullSpots) {
+          const px = Math.round((vx - cr.x0) / cr.w * PW), py = Math.round((vy - cr.y0) / cr.w * PH);
+          let hit = 0, tot = 0;
+          for (let yy = py - rad; yy <= py + rad; yy++) for (let xx = px - rad; xx <= px + rad; xx++) {
+            if (xx < 0 || yy < 0 || xx >= PW || yy >= PH) continue;
+            tot++; if (e.bin[yy * PW + xx]) hit++;
+          }
+          if (hit >= Math.max(3, tot * 0.03)) return false; // something is still where that dart was
+        }
+        return true;
+      }
+      return e.count < Math.max(P.minArea * 3, maskCount * 0.01);
+    }
+
     // armed: something moved since the last decision. Changes that appear without any movement
     // (light drift, auto-exposure) are absorbed and never counted as darts.
-    let armed = false, paused = false, cand = null;
+    let armed = false, paused = false, cand = null, shiftChecked = false;
     function tick(now) {
-      if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over) return;
+      if (!stream || calibrating || recalBusy || !H || video.readyState < 2 || !G || G.over) return;
       if (isBotTurn() || !$('#padSheet').hidden || !$('#modal').hidden) { paused = true; return; }
       if (!ensureSize()) return;
       const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
       pctx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, PW, PH);
       const cur = pctx.getImageData(0, 0, PW, PH).data;
-      if (!ref) { ref = new Uint8ClampedArray(cur); prev = new Uint8ClampedArray(cur); stable = 0; armed = false; cand = null; return; }
+      if (!ref) {
+        ref = copy(cur); prev = copy(cur); stable = 0; armed = false; cand = null;
+        if (!emptyRef && !pulling && G.visit.length === 0) emptyRef = copy(cur);
+        return;
+      }
       if (paused) {
         // Back from a pause (bot turn, dialog): darts may have been pulled meanwhile, so look once.
-        paused = false; armed = true; cand = null; stable = 0; prev = new Uint8ClampedArray(cur); return;
+        paused = false; armed = true; cand = null; stable = 0; prev = copy(cur); return;
       }
       const P = params();
-      const m = C.denoise(C.diffMask(cur, prev, mask, PW, PH, P.thr, null, C.meanOffset(cur, prev, mask, PW, PH)).bin, PW, PH);
-      prev = new Uint8ClampedArray(cur);
+      const m = changed(cur, prev, P);
+      prev = copy(cur);
       if (m.count > P.motion) {
-        stable = 0; cand = null;
+        stable = 0; cand = null; shiftChecked = false;
         if (m.count >= Math.max(P.motion * 2, P.minArea * 0.6)) armed = true;
         if (!pulling) setStatus('motion', 'Bewegung …');
         return;
       }
       stable++;
       if (stable < 5 || now < cooldownUntil) return; // ~0.4 s quiet: the dart has stopped wobbling
-      const ch = C.denoise(C.diffMask(cur, ref, mask, PW, PH, P.thr, null, C.meanOffset(cur, ref, mask, PW, PH)).bin, PW, PH);
+      const ch = changed(cur, ref, P);
       self.lastBin = ch.bin;
       if (debugView) drawOverlay();
+
+      // Did the phone move? Check once per quiet phase when the picture changed noticeably.
+      if (!shiftChecked && ch.count >= P.minArea) {
+        shiftChecked = true;
+        const sh = C.estimateShift(cur, ref, mask, PW, PH, 10);
+        if ((sh.dx || sh.dy) && sh.score < sh.score0 * 0.7) {
+          if (Math.abs(sh.dx) >= 9 || Math.abs(sh.dy) >= 9) autoRecal();
+          else { applyShift(sh.dx, sh.dy); toast('Kamera leicht verrutscht – ausgeglichen', 2200); }
+          return;
+        }
+      }
+
+      if (pulling) {
+        const gone = dartsGone(cur, P);
+        if (gone === true || (gone === null && armed && ch.count >= P.minArea)) {
+          ref = copy(cur); emptyRef = copy(cur); stable = 0; armed = false; cand = null; self.lastBin = null; pullSpots = [];
+          pulling = false;
+          if (settings.autoNext && G && visitState().done && !isBotTurn()) { nextTurn(); toast('Darts gezogen – nächster Spieler'); }
+          pulling = G ? visitState().done : false;
+          if (!pulling && !isBotTurn()) setStatus('ready', 'Bereit – wirf!');
+        } else {
+          setStatus('pull', gone === false ? 'Darts ziehen …' : 'Darts ziehen');
+          if (ch.count < P.minArea && stable % 8 === 0) blend(ref, cur);
+        }
+        return;
+      }
+
       if (ch.count < P.minArea) {
         bigSince = 0; cand = null; armed = false;
-        if (stable % 8 === 0) blend(ref, cur); // follow slow light changes
-        if (!pulling) setStatus('ready', 'Bereit – wirf!');
+        if (stable % 8 === 0) {
+          blend(ref, cur); // follow slow light changes
+          if (G.visit.length === 0) emptyRef = copy(ref);
+        }
+        setStatus('ready', 'Bereit – wirf!');
         return;
       }
       if (!armed) {
         // Changed without anything moving in front of the camera: not a throw.
-        if (stable >= 12) { ref = new Uint8ClampedArray(cur); self.lastBin = null; }
-        return;
-      }
-      if (pulling) {
-        // Board changed after a finished visit: darts were pulled.
-        ref = new Uint8ClampedArray(cur); stable = 0; armed = false; cand = null; self.lastBin = null;
-        if (settings.autoNext && G && visitState().done) { nextTurn(); toast('Darts gezogen – nächster Spieler'); }
-        pulling = G ? visitState().done : false;
-        if (!pulling && !isBotTurn()) setStatus('ready', 'Bereit – wirf!');
+        if (stable >= 12) { ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; }
         return;
       }
       if (ch.count > P.maxArea) {
         cand = null;
         if (!bigSince) bigSince = now;
         setStatus('motion', 'Zu viel Veränderung im Bild');
-        if (now - bigSince > 2500) { ref = new Uint8ClampedArray(cur); bigSince = 0; armed = false; toast('Board-Referenz neu aufgenommen'); }
+        if (now - bigSince > 2500) { bigSince = 0; armed = false; autoRecal(); }
         return;
       }
       bigSince = 0;
@@ -875,9 +992,24 @@
       if (stable - cand.at < 3) return;
       if (Math.abs(ch.count - cand.count) > Math.max(8, 0.3 * Math.max(ch.count, cand.count))) { cand = { count: ch.count, at: stable }; return; }
       cand = null;
+      // Safety net: if the changed pixels now look like the empty board again, darts were removed, not thrown.
+      if (emptyRef) {
+        let back = 0, tot = 0;
+        for (let i = 0; i < PW * PH; i++) {
+          if (!ch.bin[i]) continue;
+          tot++;
+          const j = i * 4;
+          if (Math.max(Math.abs(cur[j] - emptyRef[j]), Math.abs(cur[j + 1] - emptyRef[j + 1]), Math.abs(cur[j + 2] - emptyRef[j + 2])) <= P.thr) back++;
+        }
+        if (tot && back / tot > 0.6) {
+          ref = copy(cur); stable = 0; armed = false; self.lastBin = null;
+          setStatus('ready', 'Darts entfernt – kein Wurf');
+          return;
+        }
+      }
       const left = 3 - G.visit.length;
       const hits = C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: 1.5, max: left, tipPref: settings.tipPref });
-      ref = new Uint8ClampedArray(cur); stable = 0; armed = false; cooldownUntil = now + 300;
+      ref = copy(cur); stable = 0; armed = false; cooldownUntil = now + 300;
       if (!hits.length) {
         if (hits.rejected.length) setStatus('ready', 'Fleck ignoriert – kein Dart');
         return;
@@ -904,7 +1036,7 @@
   // ---------------- Settings sheet ----------------
   $('#btnSettings').onclick = () => {
     $('#sens').value = settings.sens; $('#sensVal').textContent = settings.sens;
-    $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice; $('#sfx').checked = settings.sfx !== false;
+    $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice; fillVoiceSelect(); $('#voiceRate').value = settings.voiceRate || 1; $('#sfx').checked = settings.sfx !== false;
     $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake;
     $('#camToggle').textContent = stream ? 'Kamera stoppen' : 'Kamera starten';
     $('#setSheet').hidden = false;
@@ -912,6 +1044,9 @@
   $('#sens').oninput = e => { settings.sens = +e.target.value; $('#sensVal').textContent = settings.sens; saveSettings(); };
   $('#tipPref').onchange = e => { settings.tipPref = e.target.value; saveSettings(); };
   $('#voice').onchange = e => { settings.voice = e.target.checked; saveSettings(); };
+  $('#voiceSel').onchange = e => { settings.voiceName = e.target.value; saveSettings(); pickVoice(); say('Einhundertachtzig!'); };
+  $('#voiceRate').onchange = e => { settings.voiceRate = +e.target.value; saveSettings(); say('Du brauchst 40. Doppel 20.'); };
+  $('#voiceTest').onclick = () => { const was = settings.voice; settings.voice = true; say('Game on!', 'Triple 20.', 'Einhundertachtzig!'); settings.voice = was; };
   $('#sfx').onchange = e => { settings.sfx = e.target.checked; saveSettings(); if (settings.sfx) sfx.hit(); };
   $('#autoNext').onchange = e => { settings.autoNext = e.target.checked; saveSettings(); };
   $('#wake').onchange = e => { settings.wake = e.target.checked; saveSettings(); if (settings.wake) requestWake(); else if (wakeLock) wakeLock.release().catch(() => {}); };
