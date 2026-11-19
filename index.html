@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0e1311">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>OcheCam</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700;800&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: one-screen phone app. Scoreboard on top, camera stage in the middle, visit + actions at the thumb. */
+:root{
+  --bg:#0e1311;          /* pub-night green-black */
+  --surface:#161d1a;
+  --raised:#1e2723;
+  --line:#2b3732;
+  --fg:#efe8d8;          /* chalk */
+  --muted:#93a198;
+  --red:#d8443a;         /* board red */
+  --green:#2e9b5c;       /* board green */
+  --cream:#e9dcc0;       /* board cream */
+  --amber:#f0b54a;       /* checkout / attention */
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.4 var(--body);-webkit-tap-highlight-color:transparent;overscroll-behavior:none;
+  padding:env(safe-area-inset-top,0) max(0px,env(safe-area-inset-right,0)) env(safe-area-inset-bottom,0) max(0px,env(safe-area-inset-left,0))}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;touch-action:manipulation}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+[hidden]{display:none!important}
+.screen{height:100%;display:flex;flex-direction:column;max-width:720px;margin:0 auto}
+.num{font-family:var(--display);font-variant-numeric:tabular-nums}
+
+/* ---------- Setup ---------- */
+#setup{overflow-y:auto;padding:20px 16px 32px;gap:22px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:44px;height:44px;flex:none}
+.brand h1{font:800 34px/1 var(--display);letter-spacing:.5px;margin:0;text-transform:uppercase}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:14px}
+.group{display:flex;flex-direction:column;gap:10px}
+.label{font:700 13px/1 var(--display);letter-spacing:1.6px;text-transform:uppercase;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{padding:10px 16px;border-radius:999px;background:var(--surface);border:1px solid var(--line);font-weight:600}
+.chip[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.players{display:flex;flex-direction:column;gap:8px}
+.prow{display:flex;gap:8px;align-items:center}
+.prow input{flex:1;min-width:0;padding:12px 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line);color:var(--fg);font:500 16px var(--body)}
+.iconbtn{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line);flex:none}
+.iconbtn svg{width:20px;height:20px}
+.ghost{padding:12px;border-radius:12px;border:1px dashed var(--line);color:var(--muted);font-weight:600}
+.primary{padding:16px;border-radius:14px;background:var(--red);color:#fff;font:800 22px var(--display);letter-spacing:1px;text-transform:uppercase}
+.secondary{padding:14px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-weight:600}
+.hint{color:var(--muted);font-size:13px;margin:0}
+
+/* ---------- Game ---------- */
+#game{gap:8px;padding:8px 10px 10px}
+.board-strip{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;flex:none}
+.board-strip::-webkit-scrollbar{display:none}
+.pcard{flex:1 0 96px;min-width:96px;padding:6px 10px 8px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;gap:0;position:relative}
+.pcard.active{background:var(--raised);border-color:var(--cream);flex-grow:1.6}
+.pcard .pname{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.pcard.active .pname{color:var(--fg)}
+.pcard .prem{font:800 38px/1 var(--display)}
+.pcard.active .prem{font-size:52px}
+.pcard .pmeta{font-size:12px;color:var(--muted);display:flex;gap:8px;font-variant-numeric:tabular-nums}
+.legs{position:absolute;right:8px;top:7px;display:flex;gap:3px}
+.legs i{width:7px;height:7px;border-radius:50%;background:var(--line)}
+.legs i.won{background:var(--green)}
+
+.checkout{flex:none;display:flex;align-items:center;gap:8px;min-height:30px;padding:4px 10px;border-radius:10px;background:color-mix(in srgb,var(--amber) 14%,transparent);color:var(--amber);font:700 18px var(--display);letter-spacing:.5px}
+.checkout .k{font:700 11px var(--body);letter-spacing:1.4px;text-transform:uppercase;opacity:.85}
+.checkout.none{background:transparent;color:var(--muted);font:500 13px var(--body)}
+
+.stage-wrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center}
+.stage{position:relative;width:100%;max-height:100%;aspect-ratio:4/3;background:#000;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%}
+.stage video{object-fit:fill}
+.stage canvas{touch-action:none}
+.stage .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;text-align:center;color:var(--muted)}
+.status{position:absolute;left:8px;top:8px;padding:5px 10px;border-radius:999px;background:rgba(0,0,0,.62);font:600 13px var(--body);display:flex;align-items:center;gap:6px;pointer-events:none}
+.status i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.status[data-k="ready"] i{background:var(--green)}
+.status[data-k="motion"] i{background:var(--amber)}
+.status[data-k="hit"] i{background:var(--red)}
+.status[data-k="pull"] i{background:var(--cream)}
+.stage-tools{position:absolute;right:8px;top:8px;display:flex;gap:6px}
+.stage-tools button{width:38px;height:38px;border-radius:10px;background:rgba(0,0,0,.62);display:grid;place-items:center}
+.stage-tools button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+.stage-tools svg{width:19px;height:19px}
+.calbar{position:absolute;left:8px;right:8px;bottom:8px;padding:10px 12px;border-radius:12px;background:rgba(10,14,12,.86);display:flex;flex-direction:column;gap:8px;font-size:13px}
+.calbar .row{display:flex;gap:8px}
+.calbar button{flex:1;padding:9px;border-radius:10px;background:var(--raised);font-weight:600}
+.calbar button.ok{background:var(--green);color:#fff}
+
+.visit{flex:none;display:grid;grid-template-columns:repeat(3,1fr) auto;gap:6px}
+.slot{height:58px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1}
+.slot .l{font:800 26px var(--display)}
+.slot .v{font-size:11px;color:var(--muted);margin-top:3px}
+.slot.filled{background:var(--raised);border-color:var(--cream)}
+.slot.unsure{border-color:var(--amber);border-style:dashed}
+.slot.next{border-color:var(--muted);border-style:dashed}
+.vsum{min-width:72px;border-radius:12px;background:var(--fg);color:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;padding:0 8px}
+.vsum b{font:800 30px var(--display)}
+.vsum small{font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:600}
+.vsum.bust{background:var(--red);color:#fff}
+.vsum.win{background:var(--green);color:#fff}
+
+.actions{flex:none;display:grid;grid-template-columns:1fr 1fr 1fr 1.4fr;gap:6px}
+.actions button{height:52px;border-radius:12px;background:var(--surface);border:1px solid var(--line);font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12px}
+.actions button svg{width:20px;height:20px}
+.actions .go{background:var(--green);border-color:var(--green);color:#fff;font:800 19px var(--display);letter-spacing:1px;text-transform:uppercase}
+.topbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.topbar .t{font:700 14px var(--display);letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)}
+.topbar .iconbtn{width:36px;height:36px;border-radius:10px}
+
+/* ---------- Sheets & dialogs ---------- */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+.sheet{width:100%;max-width:560px;max-height:94%;overflow-y:auto;background:var(--surface);border-radius:20px 20px 0 0;border-top:1px solid var(--line);
+  padding:14px max(16px,env(safe-area-inset-right,0)) calc(16px + env(safe-area-inset-bottom,0)) max(16px,env(safe-area-inset-left,0));display:flex;flex-direction:column;gap:12px}
+.sheet h2{margin:0;font:800 24px var(--display);text-transform:uppercase;letter-spacing:.5px}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mods{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.mods button{padding:10px;border-radius:10px;background:var(--raised);border:1px solid var(--line);font:700 16px var(--display);letter-spacing:.5px}
+.mods button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+#padBoard{width:100%;max-width:380px;margin:0 auto;display:block;touch-action:manipulation;user-select:none}
+.quick{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.quick button{padding:12px;border-radius:10px;background:var(--raised);border:1px solid var(--line);font:700 17px var(--display)}
+.field{display:flex;flex-direction:column;gap:6px}
+.field select,.field input[type=range]{width:100%}
+.field select{padding:11px;border-radius:10px;background:var(--raised);color:var(--fg);border:1px solid var(--line);font:500 15px var(--body)}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0}
+.switch input{width:22px;height:22px;accent-color:var(--green)}
+.modal{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px}
+.modal .card{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px 18px;display:flex;flex-direction:column;gap:14px;text-align:center}
+.modal h2{margin:0;font:800 40px/1 var(--display);text-transform:uppercase}
+.statgrid{display:grid;grid-template-columns:1fr auto auto auto;gap:6px 12px;text-align:left;font-variant-numeric:tabular-nums;font-size:14px}
+.statgrid .h{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px}
+.toast{position:fixed;left:50%;top:calc(12px + env(safe-area-inset-top,0));transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-weight:600;font-size:14px;max-width:90%;text-align:center}
+@media (prefers-reduced-motion:no-preference){.pcard,.slot{transition:background .15s,border-color .15s}}
+@media (min-height:820px){.slot{height:66px}.actions button{height:58px}}
+</style>
+</head>
+<body>
+
+<!-- ============ SETUP ============ -->
+<section id="setup" class="screen">
+  <div class="brand">
+    <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#161d1a" stroke="#e9dcc0" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="#d8443a" stroke-width="3"/><circle cx="24" cy="24" r="8" fill="none" stroke="#2e9b5c" stroke-width="3"/><circle cx="24" cy="24" r="3" fill="#d8443a"/><circle cx="24" cy="24" r="22" fill="none" stroke="#f0b54a" stroke-width="2" stroke-dasharray="4 6"/></svg>
+    <div><h1>OcheCam</h1><p>Darts zählen mit der Handykamera</p></div>
+  </div>
+
+  <div class="group">
+    <span class="label">Spieler</span>
+    <div class="players" id="playerList"></div>
+    <button class="ghost" id="addPlayer">+ Spieler hinzufügen</button>
+  </div>
+
+  <div class="group">
+    <span class="label">Startpunkte</span>
+    <div class="chips" data-opt="start">
+      <button class="chip" data-v="301">301</button><button class="chip" data-v="501">501</button><button class="chip" data-v="701">701</button>
+    </div>
+  </div>
+  <div class="group">
+    <span class="label">Check-out</span>
+    <div class="chips" data-opt="out">
+      <button class="chip" data-v="double">Double Out</button><button class="chip" data-v="single">Single Out</button><button class="chip" data-v="master">Master Out</button>
+    </div>
+  </div>
+  <div class="group">
+    <span class="label">Legs zum Sieg</span>
+    <div class="chips" data-opt="legs">
+      <button class="chip" data-v="1">1</button><button class="chip" data-v="2">2</button><button class="chip" data-v="3">3</button><button class="chip" data-v="5">5</button>
+    </div>
+  </div>
+
+  <button class="primary" id="startGame">Spiel starten</button>
+  <button class="secondary" id="resumeGame" hidden>Letztes Spiel fortsetzen</button>
+  <p class="hint">Tipp: Handy 1–2 m vor dem Board fest aufstellen (Stativ oder Regal), leicht seitlich unterhalb. Beim ersten Start einmal kalibrieren – die Kalibrierung bleibt gespeichert.</p>
+</section>
+
+<!-- ============ GAME ============ -->
+<section id="game" class="screen" hidden>
+  <div class="topbar">
+    <button class="iconbtn" id="btnMenu" aria-label="Spiel beenden"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <span class="t" id="legInfo">501 · Leg 1</span>
+    <button class="iconbtn" id="btnSettings" aria-label="Einstellungen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </div>
+
+  <div class="board-strip" id="strip"></div>
+  <div class="checkout none" id="checkout"></div>
+
+  <div class="stage-wrap" id="stageWrap">
+    <div class="stage" id="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="empty" id="camEmpty">
+        <span>Kamera ist aus. Du kannst auch manuell eintippen.</span>
+        <button class="secondary" id="camStart">Kamera starten</button>
+      </div>
+      <div class="status" id="status" data-k="off"><i></i><span>Kamera aus</span></div>
+      <div class="stage-tools">
+        <button id="btnCal" aria-label="Kalibrieren" title="Kalibrieren"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 1v5M12 18v5M1 12h5M18 12h5"/></svg></button>
+        <button id="btnDebug" aria-label="Erkennung anzeigen" aria-pressed="false" title="Erkennung anzeigen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      </div>
+      <div class="calbar" id="calbar" hidden>
+        <span>Ziehe die 4 Punkte auf die <b>äußere Kante des Doppelrings</b>, jeweils mittig im Feld <b>20, 6, 3 und 11</b>. Das Gitter muss danach genau auf dem Board liegen.</span>
+        <div class="row"><button id="calReset">Zurücksetzen</button><button class="ok" id="calDone">Fertig</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="visit" id="visit"></div>
+
+  <div class="actions">
+    <button id="btnUndo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>Zurück</button>
+    <button id="btnMiss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>Miss</button>
+    <button id="btnPad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v5M12 16v5M3 12h5M16 12h5"/></svg>Eintippen</button>
+    <button class="go" id="btnNext">Weiter</button>
+  </div>
+</section>
+
+<!-- ============ PAD SHEET ============ -->
+<div class="scrim" id="padSheet" hidden>
+  <div class="sheet" role="dialog" aria-labelledby="padTitle">
+    <div class="sheet-head"><h2 id="padTitle">Dart 1 eintippen</h2><button class="iconbtn" data-close aria-label="Schließen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="mods" id="mods">
+      <button data-m="0" aria-pressed="true">Feld genau</button><button data-m="2" aria-pressed="false">Double</button><button data-m="3" aria-pressed="false">Triple</button>
+    </div>
+    <svg id="padBoard" viewBox="-200 -200 400 400" aria-label="Dartboard zum Antippen"></svg>
+    <div class="quick"><button data-q="0">Miss</button><button data-q="25">25</button><button data-q="50">Bull</button></div>
+  </div>
+</div>
+
+<!-- ============ SETTINGS SHEET ============ -->
+<div class="scrim" id="setSheet" hidden>
+  <div class="sheet" role="dialog" aria-labelledby="setTitle">
+    <div class="sheet-head"><h2 id="setTitle">Einstellungen</h2><button class="iconbtn" data-close aria-label="Schließen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="field"><span class="label">Kamera</span><select id="camSelect"><option value="">Rückkamera (Standard)</option></select></div>
+    <div class="field"><span class="label">Empfindlichkeit <span id="sensVal"></span></span><input type="range" id="sens" min="1" max="100"></div>
+    <div class="field"><span class="label">Dartspitze im Bild</span>
+      <select id="tipPref"><option value="auto">Automatisch (schmales Ende)</option><option value="up">Spitze zeigt nach oben</option><option value="down">Spitze zeigt nach unten</option></select></div>
+    <label class="switch"><span>Caller-Ansage (Sprache)</span><input type="checkbox" id="voice"></label>
+    <label class="switch"><span>Automatisch weiter, wenn Darts gezogen</span><input type="checkbox" id="autoNext"></label>
+    <label class="switch"><span>Bildschirm anlassen</span><input type="checkbox" id="wake"></label>
+    <button class="secondary" id="camToggle">Kamera stoppen</button>
+    <button class="secondary" id="refReset">Board-Referenz neu aufnehmen</button>
+    <p class="hint">Erkennt die App zu viele Phantom-Darts, Empfindlichkeit senken. Werden Darts übersehen, erhöhen. Ein falsch erkannter Dart lässt sich jederzeit durch Antippen seines Feldes korrigieren.</p>
+  </div>
+</div>
+
+<!-- ============ MODAL ============ -->
+<div class="modal" id="modal" hidden><div class="card" id="modalCard"></div></div>
+<div class="toast" id="toast" hidden></div>
+
+<canvas id="proc" hidden></canvas>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
