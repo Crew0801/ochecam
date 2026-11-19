@@ -131,13 +131,26 @@
 
   // ---------- Detection ----------
   /** Per-pixel max channel difference between two RGBA buffers, inside mask. */
-  function diffMask(a, b, mask, w, h, thr, out) {
+  /** Average colour shift between two frames inside the mask (auto-exposure / light changes). */
+  function meanOffset(a, b, mask, w, h) {
+    const n = w * h;
+    let s0 = 0, s1 = 0, s2 = 0, c = 0;
+    for (let i = 0, j = 0; i < n; i += 3, j += 12) {
+      if (!mask[i]) continue;
+      s0 += a[j] - b[j]; s1 += a[j + 1] - b[j + 1]; s2 += a[j + 2] - b[j + 2]; c++;
+    }
+    return c ? [s0 / c, s1 / c, s2 / c] : [0, 0, 0];
+  }
+
+  /** Changed pixels between frames a and b. off = [r,g,b] global shift removed first. */
+  function diffMask(a, b, mask, w, h, thr, out, off) {
     const n = w * h;
     const bin = out || new Uint8Array(n);
+    const o0 = off ? off[0] : 0, o1 = off ? off[1] : 0, o2 = off ? off[2] : 0;
     let count = 0;
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       if (!mask[i]) { bin[i] = 0; continue; }
-      const d = Math.max(Math.abs(a[j] - b[j]), Math.abs(a[j + 1] - b[j + 1]), Math.abs(a[j + 2] - b[j + 2]));
+      const d = Math.max(Math.abs(a[j] - b[j] - o0), Math.abs(a[j + 1] - b[j + 1] - o1), Math.abs(a[j + 2] - b[j + 2] - o2));
       if (d > thr) { bin[i] = 1; count++; } else bin[i] = 0;
     }
     return { bin, count };
@@ -187,27 +200,48 @@
     return comps;
   }
 
-  /**
-   * Locate the newest dart in a binary change mask.
-   * tipPref: 'auto' (thinner end), 'up', 'down' (image direction of the tip).
-   * Returns {x, y} in pixel coords of the mask, plus diagnostics, or null.
-   */
-  function findDart(bin, w, h, opts) {
-    opts = opts || {};
-    const minArea = opts.minArea || 25;
-    const comps = components(bin, w, h).sort((a, b) => b.pts.length - a.pts.length);
-    if (!comps.length || comps[0].pts.length < minArea) return null;
-    const main = comps[0];
-    let pts = main.pts.slice();
-    // Merge fragments near the main blob (thin shafts often break apart).
+  /** Group connected components that lie close together (a dart's shaft often breaks apart). */
+  function clusters(bin, w, h) {
     const gap = Math.max(6, Math.round(w / 40));
-    for (let k = 1; k < comps.length; k++) {
-      const c = comps[k];
-      if (c.pts.length < 4) continue;
-      if (c.minx <= main.maxx + gap && c.maxx >= main.minx - gap && c.miny <= main.maxy + gap && c.maxy >= main.miny - gap) {
-        pts = pts.concat(c.pts);
-      }
+    const comps = components(bin, w, h).filter(c => c.pts.length >= 4).sort((a, b) => b.pts.length - a.pts.length);
+    const out = [];
+    for (const c of comps) {
+      const near = out.find(k => c.minx <= k.maxx + gap && c.maxx >= k.minx - gap && c.miny <= k.maxy + gap && c.maxy >= k.miny - gap);
+      if (near) {
+        near.pts = near.pts.concat(c.pts);
+        near.minx = Math.min(near.minx, c.minx); near.maxx = Math.max(near.maxx, c.maxx);
+        near.miny = Math.min(near.miny, c.miny); near.maxy = Math.max(near.maxy, c.maxy);
+      } else out.push({ pts: c.pts.slice(), minx: c.minx, maxx: c.maxx, miny: c.miny, maxy: c.maxy });
     }
+    return out.sort((a, b) => b.pts.length - a.pts.length);
+  }
+
+  /**
+   * All new darts in a binary change mask, biggest first.
+   * opts: minArea, minElong (shape filter against blobs of light/noise), max, tipPref.
+   * Returns [{x, y, area, elong, conf, ...}] in mask pixel coords; rejected blobs in .rejected.
+   */
+  function findDarts(bin, w, h, opts) {
+    opts = opts || {};
+    const minArea = opts.minArea || 25, minElong = opts.minElong || 1.5, max = opts.max || 3;
+    const found = [], rejected = [];
+    for (const c of clusters(bin, w, h)) {
+      if (c.pts.length < minArea) break;
+      const r = analyzeDart(c.pts, w, opts);
+      if (r.elong >= minElong && r.length >= 6) found.push(r); else rejected.push(r);
+      if (found.length >= max) break;
+    }
+    found.rejected = rejected;
+    return found;
+  }
+
+  /** Biggest dart only (kept for compatibility). */
+  function findDart(bin, w, h, opts) {
+    return findDarts(bin, w, h, Object.assign({ minElong: 1 }, opts, { max: 1 }))[0] || null;
+  }
+
+  /** Axis, tip end and confidence of one blob. tipPref: 'auto' (thinner end), 'up', 'down'. */
+  function analyzeDart(pts, w, opts) {
     const n = pts.length;
     let mx = 0, my = 0;
     for (const p of pts) { mx += p % w; my += (p / w) | 0; }
@@ -327,7 +361,7 @@
 
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    diffMask, denoise, components, findDart, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

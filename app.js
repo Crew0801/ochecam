@@ -252,7 +252,18 @@
       else say(dartWord);
     }
     // Bot darts are virtual: nothing to pull from the board.
-    if (st.done && !isBotTurn()) detector.waitForPull();
+    if (st.done && !isBotTurn()) {
+      detector.waitForPull();
+      // Against a bot the game goes on by itself; pull your darts while the bot throws.
+      const nextIdx = (G.cur + 1) % G.players.length;
+      if (G.players.some(p => p.bot) && (st.win || G.players[nextIdx].bot)) {
+        const key = undoStack.length;
+        clearTimeout(advanceTimer);
+        advanceTimer = setTimeout(() => {
+          if (G && !G.over && undoStack.length === key && !isBotTurn() && visitState().done && $('#modal').hidden && !$('#game').hidden) nextTurn();
+        }, 2400);
+      }
+    }
     persist(); render();
   }
 
@@ -297,7 +308,7 @@
 
   function undo() {
     if (!undoStack.length) { toast('Nichts zum Zurücknehmen'); return; }
-    clearTimeout(botTimer);
+    clearTimeout(botTimer); clearTimeout(advanceTimer);
     G = JSON.parse(undoStack.pop());
     // Skip back over bot throws to the last human action.
     while (undoStack.length && G.players[G.cur].bot) G = JSON.parse(undoStack.pop());
@@ -307,7 +318,7 @@
   }
 
   // ---------------- Dart bot ----------------
-  let botTimer = null;
+  let botTimer = null, advanceTimer = null;
   const isBotTurn = () => !!(G && !G.over && G.players[G.cur].bot);
   function scheduleBot() {
     clearTimeout(botTimer);
@@ -751,52 +762,84 @@
     }
     function blend(a, b) { for (let i = 0; i < a.length; i++) a[i] = (a[i] * 3 + b[i]) >> 2; }
 
+    // armed: something moved since the last decision. Changes that appear without any movement
+    // (light drift, auto-exposure) are absorbed and never counted as darts.
+    let armed = false, paused = false, cand = null;
     function tick(now) {
-      if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over || isBotTurn()) return;
-      if (!$('#padSheet').hidden || !$('#modal').hidden) return;
+      if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over) return;
+      if (isBotTurn() || !$('#padSheet').hidden || !$('#modal').hidden) { paused = true; return; }
       if (!ensureSize()) return;
       const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
       pctx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, PW, PH);
       const cur = pctx.getImageData(0, 0, PW, PH).data;
-      if (!ref) { ref = new Uint8ClampedArray(cur); prev = new Uint8ClampedArray(cur); stable = 0; return; }
+      if (!ref) { ref = new Uint8ClampedArray(cur); prev = new Uint8ClampedArray(cur); stable = 0; armed = false; cand = null; return; }
+      if (paused) {
+        // Back from a pause (bot turn, dialog): darts may have been pulled meanwhile, so look once.
+        paused = false; armed = true; cand = null; stable = 0; prev = new Uint8ClampedArray(cur); return;
+      }
       const P = params();
-      const m = C.denoise(C.diffMask(cur, prev, mask, PW, PH, P.thr).bin, PW, PH);
+      const m = C.denoise(C.diffMask(cur, prev, mask, PW, PH, P.thr, null, C.meanOffset(cur, prev, mask, PW, PH)).bin, PW, PH);
       prev = new Uint8ClampedArray(cur);
-      if (m.count > P.motion) { stable = 0; if (!pulling) setStatus('motion', 'Bewegung …'); return; }
+      if (m.count > P.motion) {
+        stable = 0; cand = null;
+        if (m.count >= Math.max(P.motion * 2, P.minArea * 0.6)) armed = true;
+        if (!pulling) setStatus('motion', 'Bewegung …');
+        return;
+      }
       stable++;
-      if (stable < 4 || now < cooldownUntil) return;
-      const ch = C.denoise(C.diffMask(cur, ref, mask, PW, PH, P.thr).bin, PW, PH);
+      if (stable < 5 || now < cooldownUntil) return; // ~0.4 s quiet: the dart has stopped wobbling
+      const ch = C.denoise(C.diffMask(cur, ref, mask, PW, PH, P.thr, null, C.meanOffset(cur, ref, mask, PW, PH)).bin, PW, PH);
       self.lastBin = ch.bin;
       if (debugView) drawOverlay();
       if (ch.count < P.minArea) {
-        bigSince = 0;
+        bigSince = 0; cand = null; armed = false;
         if (stable % 8 === 0) blend(ref, cur); // follow slow light changes
         if (!pulling) setStatus('ready', 'Bereit – wirf!');
         return;
       }
+      if (!armed) {
+        // Changed without anything moving in front of the camera: not a throw.
+        if (stable >= 12) { ref = new Uint8ClampedArray(cur); self.lastBin = null; }
+        return;
+      }
       if (pulling) {
         // Board changed after a finished visit: darts were pulled.
-        ref = new Uint8ClampedArray(cur); stable = 0; self.lastBin = null;
+        ref = new Uint8ClampedArray(cur); stable = 0; armed = false; cand = null; self.lastBin = null;
         if (settings.autoNext && G && visitState().done) { nextTurn(); toast('Darts gezogen – nächster Spieler'); }
         pulling = G ? visitState().done : false;
-        if (!pulling) setStatus('ready', 'Bereit – wirf!');
+        if (!pulling && !isBotTurn()) setStatus('ready', 'Bereit – wirf!');
         return;
       }
       if (ch.count > P.maxArea) {
+        cand = null;
         if (!bigSince) bigSince = now;
         setStatus('motion', 'Zu viel Veränderung im Bild');
-        if (now - bigSince > 2500) { ref = new Uint8ClampedArray(cur); bigSince = 0; toast('Board-Referenz neu aufgenommen'); }
+        if (now - bigSince > 2500) { ref = new Uint8ClampedArray(cur); bigSince = 0; armed = false; toast('Board-Referenz neu aufgenommen'); }
         return;
       }
       bigSince = 0;
-      const hit = C.findDart(ch.bin, PW, PH, { minArea: P.minArea, tipPref: settings.tipPref });
-      ref = new Uint8ClampedArray(cur); stable = 0; cooldownUntil = now + 350;
-      if (!hit) return;
-      const [nx, ny] = d2v(hit.x / PW, hit.y / PH);
-      const [bx, by] = C.applyH(H, nx, ny);
-      const d = C.scoreAt(bx, by);
-      setStatus('hit', 'Erkannt: ' + d.label);
-      addDart(d, { auto: true, img: [nx, ny], conf: +hit.conf.toFixed(2) });
+      // Confirm: the change must look the same on two checks ~0.25 s apart (no flicker).
+      if (!cand) { cand = { count: ch.count, at: stable }; return; }
+      if (stable - cand.at < 3) return;
+      if (Math.abs(ch.count - cand.count) > Math.max(8, 0.3 * Math.max(ch.count, cand.count))) { cand = { count: ch.count, at: stable }; return; }
+      cand = null;
+      const left = 3 - G.visit.length;
+      const hits = C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: 1.5, max: left, tipPref: settings.tipPref });
+      ref = new Uint8ClampedArray(cur); stable = 0; armed = false; cooldownUntil = now + 300;
+      if (!hits.length) {
+        if (hits.rejected.length) setStatus('ready', 'Fleck ignoriert – kein Dart');
+        return;
+      }
+      // Several darts can land between two checks (quick throws): count each one.
+      const labels = [];
+      for (const hit of hits) {
+        const [nx, ny] = d2v(hit.x / PW, hit.y / PH);
+        const [bx, by] = C.applyH(H, nx, ny);
+        const d = C.scoreAt(bx, by);
+        labels.push(d.label);
+        addDart(d, { auto: true, img: [nx, ny], conf: +hit.conf.toFixed(2) });
+      }
+      if (!visitState().done) setStatus('hit', (hits.length > 1 ? hits.length + ' Darts: ' : 'Erkannt: ') + labels.join(', '));
     }
     let last = 0;
     (function loop(t) {
