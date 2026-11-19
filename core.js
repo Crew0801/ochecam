@@ -273,9 +273,61 @@
     };
   }
 
+  // ---------- Dart bot ----------
+  /** Board point (mm) a player aims at for a given bed. */
+  function aimPoint(d) {
+    if (!d || !d.n) return [0, -135];
+    if (d.n === 25) return [0, 0];
+    const r = d.m === 3 ? (R.tIn + R.tOut) / 2 : d.m === 2 ? (R.dIn + R.dOut) / 2 : (R.tOut + R.dIn) / 2;
+    const a = SEG.indexOf(d.n) * 18 * Math.PI / 180;
+    return [r * Math.sin(a), -r * Math.cos(a)];
+  }
+
+  function gauss(rng) {
+    let u = 0, v = 0;
+    while (!u) u = rng();
+    while (!v) v = rng();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  /** What the bot aims at with `rem` points left and `left` darts in the visit. */
+  function botTarget(rem, left, out) {
+    const route = checkout(rem, left, out);
+    if (route) return route[0];
+    if (out !== 'single' && rem <= 60) {
+      // No finish this visit: set up a good double.
+      for (const dbl of [40, 32, 16, 24, 36, 20, 8, 12]) {
+        const s = rem - dbl;
+        if (s >= 1 && s <= 20) return dart(s, 1);
+      }
+      if (rem > 40) return dart(rem - 40 <= 20 ? rem - 40 : 20, 1);
+      return dart(Math.max(1, rem - 2 > 20 ? 20 : rem - 2 || 1), 1);
+    }
+    if (out === 'single' && rem <= 60) return rem <= 20 ? dart(rem, 1) : dart(20, 1);
+    return dart(20, 3);
+  }
+
+  /** One simulated throw. sigma = spread in mm (lower = better). */
+  function botThrow(rem, left, out, sigma, rng) {
+    rng = rng || Math.random;
+    const target = botTarget(rem, left, out);
+    const [ax, ay] = aimPoint(target);
+    const x = ax + gauss(rng) * sigma, y = ay + gauss(rng) * sigma;
+    return { target, point: [x, y], dart: scoreAt(x, y) };
+  }
+
+  // Bot levels: target 3-dart average -> spread in mm (calibrated by simulation, 501 double out).
+  const BOT_LEVELS = [
+    { id: 'beginner', name: 'Anfänger', avg: 35, sigma: 22.5 },
+    { id: 'hobby', name: 'Hobby', avg: 50, sigma: 15.6 },
+    { id: 'league', name: 'Liga', avg: 65, sigma: 12.1 },
+    { id: 'pro', name: 'Profi', avg: 85, sigma: 8.3 },
+    { id: 'world', name: 'Weltklasse', avg: 100, sigma: 6.5 }
+  ];
+
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    diffMask, denoise, components, findDart
+    diffMask, denoise, components, findDart, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

@@ -55,6 +55,13 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .iconbtn{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line);flex:none}
 .iconbtn svg{width:20px;height:20px}
 .ghost{padding:12px;border-radius:12px;border:1px dashed var(--line);color:var(--muted);font-weight:600}
+.addrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.prow.isbot input{border-color:#5ab0f0}
+.botsel{flex:none;width:44%;padding:12px 8px;border-radius:12px;background:var(--surface);border:1px solid #5ab0f0;color:var(--fg);font:500 14px var(--body)}
+.bottag{color:#5ab0f0;font-weight:600}
+.status[data-k="bot"] i{background:#5ab0f0}
+.actions button:disabled{opacity:.35;cursor:default}
+.confetti{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:50}
 .primary{padding:16px;border-radius:14px;background:var(--red);color:#fff;font:800 22px var(--display);letter-spacing:1px;text-transform:uppercase}
 .secondary{padding:14px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-weight:600}
 .hint{color:var(--muted);font-size:13px;margin:0}
@@ -159,7 +166,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   <div class="group">
     <span class="label">Spieler</span>
     <div class="players" id="playerList"></div>
-    <button class="ghost" id="addPlayer">+ Spieler hinzufügen</button>
+    <div class="addrow"><button class="ghost" id="addPlayer">+ Spieler</button><button class="ghost" id="addBot">+ Dart-Bot</button></div>
   </div>
 
   <div class="group">
@@ -247,7 +254,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
     <div class="field"><span class="label">Empfindlichkeit <span id="sensVal"></span></span><input type="range" id="sens" min="1" max="100"></div>
     <div class="field"><span class="label">Dartspitze im Bild</span>
       <select id="tipPref"><option value="auto">Automatisch (schmales Ende)</option><option value="up">Spitze zeigt nach oben</option><option value="down">Spitze zeigt nach unten</option></select></div>
-    <label class="switch"><span>Caller-Ansage (Sprache)</span><input type="checkbox" id="voice"></label>
+    <label class="switch"><span>Stimme (sagt jeden Dart und die Summe)</span><input type="checkbox" id="voice"></label>
+    <label class="switch"><span>Effekt-Sounds (Treffer, Daneben, Konfetti)</span><input type="checkbox" id="sfx"></label>
     <label class="switch"><span>Automatisch weiter, wenn Darts gezogen</span><input type="checkbox" id="autoNext"></label>
     <label class="switch"><span>Bildschirm anlassen</span><input type="checkbox" id="wake"></label>
     <button class="secondary" id="camToggle">Kamera stoppen</button>

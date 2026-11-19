@@ -13,9 +13,12 @@
 
   const settings = Object.assign({
     players: ['Spieler 1', 'Spieler 2'], start: 501, out: 'double', legs: 2,
-    sens: 55, tipPref: 'auto', voice: true, autoNext: true, wake: true, camId: ''
+    sens: 55, tipPref: 'auto', voice: true, sfx: true, autoNext: true, wake: true, camId: ''
   }, store.get('settings', {}));
+  // Players are {name, bot} where bot is a level id from Core.BOT_LEVELS or null.
+  settings.players = settings.players.map(p => typeof p === 'string' ? { name: p, bot: null } : p);
   const saveSettings = () => store.set('settings', settings);
+  const botLevel = id => C.BOT_LEVELS.find(l => l.id === id) || C.BOT_LEVELS[2];
 
   // ---------------- Toast / speech ----------------
   let toastT;
@@ -26,32 +29,129 @@
   let deVoice = null;
   function pickVoice() {
     if (!('speechSynthesis' in window)) return;
-    const vs = speechSynthesis.getVoices();
-    deVoice = vs.find(v => /^de/i.test(v.lang)) || null;
+    const vs = speechSynthesis.getVoices().filter(v => /^de/i.test(v.lang));
+    // Prefer natural-sounding voices (online/neural), then any German voice.
+    const score = v => (/natural|neural|online|premium|enhanced/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 3 : 0)
+      + (/katja|conrad|amala|anna|petra|markus|helena|hedda|stefan|yannick/i.test(v.name) ? 1 : 0) + (v.localService ? 0 : 1);
+    deVoice = vs.sort((a, b) => score(b) - score(a))[0] || null;
   }
   if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-  function say(text) {
+  /** Speak one or more phrases in order (replaces anything still being said). */
+  function say(...parts) {
     if (!settings.voice || !('speechSynthesis' in window)) return;
     try {
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'de-DE'; if (deVoice) u.voice = deVoice; u.rate = 1.02;
-      speechSynthesis.speak(u);
+      for (const text of parts.filter(Boolean)) {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'de-DE'; if (deVoice) u.voice = deVoice; u.rate = 1.0; u.pitch = 1.0;
+        speechSynthesis.speak(u);
+      }
     } catch {}
   }
-  const spokenDart = d => d.v === 0 ? 'daneben' : d.n === 25 ? (d.m === 2 ? 'Bull' : 'fünfundzwanzig')
+
+  // ---------------- Sound effects (synthesised, work offline) ----------------
+  const sfx = (() => {
+    let ac = null, master = null;
+    function ctx() {
+      if (!ac) {
+        const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+        ac = new AC(); master = ac.createGain(); master.gain.value = 0.55; master.connect(ac.destination);
+      }
+      if (ac.state === 'suspended') ac.resume().catch(() => {});
+      return ac;
+    }
+    function tone(freq, t0, dur, type = 'sine', vol = 0.5, slideTo) {
+      const a = ctx(); if (!a) return;
+      const o = a.createOscillator(), g = a.createGain(), now = a.currentTime;
+      o.type = type; o.frequency.setValueAtTime(freq, now + t0);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, now + t0 + dur);
+      g.gain.setValueAtTime(0.0001, now + t0);
+      g.gain.exponentialRampToValueAtTime(vol, now + t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + t0 + dur);
+      o.connect(g); g.connect(master); o.start(now + t0); o.stop(now + t0 + dur + 0.05);
+    }
+    function noise(t0, dur, vol = 0.4, hp = 1000) {
+      const a = ctx(); if (!a) return;
+      const buf = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 2;
+      const src = a.createBufferSource(), f = a.createBiquadFilter(), g = a.createGain();
+      src.buffer = buf; f.type = 'highpass'; f.frequency.value = hp; g.gain.value = vol;
+      src.connect(f); f.connect(g); g.connect(master); src.start(a.currentTime + t0);
+    }
+    const on = () => settings.sfx !== false;
+    return {
+      unlock() { ctx(); },
+      // Short "thock" into the board + bright confirmation blip
+      hit() { if (!on()) return; noise(0, 0.05, 0.5, 1800); tone(180, 0, 0.09, 'triangle', 0.5, 90); tone(880, 0.03, 0.12, 'sine', 0.25); },
+      miss() { if (!on()) return; tone(260, 0, 0.32, 'sawtooth', 0.18, 110); },
+      bust() { if (!on()) return; tone(330, 0, 0.22, 'square', 0.16); tone(220, 0.22, 0.4, 'square', 0.16, 150); },
+      // Party popper + sparkle arpeggio
+      triple20() {
+        if (!on()) return;
+        noise(0, 0.12, 0.6, 2500); noise(0.08, 0.5, 0.25, 6000);
+        [784, 988, 1175, 1568, 1976].forEach((f, i) => tone(f, 0.05 + i * 0.06, 0.25, 'triangle', 0.28));
+        [2637, 3136, 2349, 2794].forEach((f, i) => tone(f, 0.35 + i * 0.07, 0.15, 'sine', 0.12));
+      },
+      fanfare() {
+        if (!on()) return;
+        noise(0, 0.15, 0.6, 2000);
+        [[523, 0], [659, .12], [784, .24], [1047, .36], [784, .52], [1047, .64]].forEach(([f, t]) => { tone(f, t, .28, 'sawtooth', .14); tone(f * 2, t, .2, 'triangle', .08); });
+        noise(0.5, 0.8, 0.22, 5000);
+      }
+    };
+  })();
+
+  // ---------------- Confetti ----------------
+  function confetti(amount = 140) {
+    if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const cv = document.createElement('canvas'); cv.className = 'confetti';
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; document.body.appendChild(cv);
+    const c = cv.getContext('2d'); c.scale(dpr, dpr);
+    const colors = ['#d8443a', '#2e9b5c', '#e9dcc0', '#f0b54a', '#5ab0f0', '#ffffff'];
+    const ps = Array.from({ length: amount }, () => ({
+      x: innerWidth / 2 + (Math.random() - .5) * 60, y: innerHeight * 0.45,
+      vx: (Math.random() - .5) * 14, vy: -Math.random() * 15 - 5, r: Math.random() * Math.PI, vr: (Math.random() - .5) * .4,
+      w: 6 + Math.random() * 6, h: 3 + Math.random() * 5, col: colors[(Math.random() * colors.length) | 0]
+    }));
+    const t0 = performance.now();
+    (function frame(t) {
+      const el = t - t0; c.clearRect(0, 0, innerWidth, innerHeight);
+      for (const p of ps) {
+        p.vy += 0.42; p.vx *= 0.985; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+        c.save(); c.translate(p.x, p.y); c.rotate(p.r); c.globalAlpha = Math.max(0, 1 - el / 2600);
+        c.fillStyle = p.col; c.fillRect(-p.w / 2, -p.h / 2, p.w, p.h * Math.abs(Math.cos(p.r * 2))); c.restore();
+      }
+      if (el < 2600) requestAnimationFrame(frame); else cv.remove();
+    })(t0);
+  }
+  const spokenDart = d => d.v === 0 ? 'Daneben' : d.n === 25 ? (d.m === 2 ? 'Bull' : 'fünfundzwanzig')
     : (d.m === 3 ? 'Triple ' : d.m === 2 ? 'Doppel ' : '') + d.n;
 
   // ---------------- Setup screen ----------------
   function renderPlayers() {
     const box = $('#playerList'); box.innerHTML = '';
-    settings.players.forEach((name, i) => {
+    settings.players.forEach((pl, i) => {
       const row = document.createElement('div'); row.className = 'prow';
       const inp = document.createElement('input');
-      inp.id = 'player' + i; inp.value = name; inp.maxLength = 18; inp.autocomplete = 'off';
+      inp.id = 'player' + i; inp.value = pl.name; inp.maxLength = 18; inp.autocomplete = 'off';
       inp.setAttribute('aria-label', 'Name Spieler ' + (i + 1));
-      inp.addEventListener('input', () => { settings.players[i] = inp.value; saveSettings(); });
+      inp.addEventListener('input', () => { pl.name = inp.value; saveSettings(); });
       row.appendChild(inp);
+      if (pl.bot) {
+        row.classList.add('isbot');
+        const sel = document.createElement('select');
+        sel.id = 'botlevel' + i; sel.className = 'botsel'; sel.setAttribute('aria-label', 'Stärke des Bots');
+        sel.innerHTML = C.BOT_LEVELS.map(l => `<option value="${l.id}">${l.name} · Ø ${l.avg}</option>`).join('');
+        sel.value = pl.bot;
+        sel.onchange = () => {
+          const oldDefault = 'Bot ' + botLevel(pl.bot).name;
+          pl.bot = sel.value;
+          if (pl.name === oldDefault) { pl.name = 'Bot ' + botLevel(pl.bot).name; inp.value = pl.name; }
+          saveSettings();
+        };
+        row.appendChild(sel);
+      }
       if (settings.players.length > 1) {
         const del = document.createElement('button');
         del.className = 'iconbtn'; del.setAttribute('aria-label', 'Spieler entfernen');
@@ -61,9 +161,13 @@
       }
       box.appendChild(row);
     });
-    $('#addPlayer').hidden = settings.players.length >= 8;
+    $('#addPlayer').hidden = $('#addBot').hidden = settings.players.length >= 8;
   }
-  $('#addPlayer').onclick = () => { settings.players.push('Spieler ' + (settings.players.length + 1)); saveSettings(); renderPlayers(); };
+  $('#addPlayer').onclick = () => {
+    const humans = settings.players.filter(p => !p.bot).length;
+    settings.players.push({ name: 'Spieler ' + (humans + 1), bot: null }); saveSettings(); renderPlayers();
+  };
+  $('#addBot').onclick = () => { settings.players.push({ name: 'Bot Liga', bot: 'league' }); saveSettings(); renderPlayers(); };
   $$('.chips').forEach(group => {
     const key = group.dataset.opt;
     const sync = () => group.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(String(settings[key]) === c.dataset.v)));
@@ -79,10 +183,10 @@
   let undoStack = [];
 
   function newGame() {
-    const names = settings.players.map((n, i) => (n || '').trim() || 'Spieler ' + (i + 1));
+    const names = settings.players.map((p, i) => (p.name || '').trim() || (p.bot ? 'Bot' : 'Spieler ' + (i + 1)));
     G = {
       start: settings.start, out: settings.out, legsToWin: settings.legs,
-      players: names.map(name => ({ name, legs: 0, pts: 0, darts: 0, f9pts: 0, f9darts: 0, high: 0, best: 0, tons: 0 })),
+      players: names.map((name, i) => ({ name, bot: settings.players[i].bot || null, legs: 0, pts: 0, darts: 0, f9pts: 0, f9darts: 0, high: 0, best: 0, tons: 0 })),
       leg: 1, starter: 0, cur: 0,
       rem: names.map(() => settings.start),
       legDarts: names.map(() => 0),
@@ -133,12 +237,22 @@
     const st = visitState();
     if (announce) {
       const last = G.visit[G.visit.length - 1];
-      if (st.bust) say('Überworfen');
-      else if (st.win) say('Game shot! ' + G.players[G.cur].name);
-      else if (st.done) say(st.sum === 180 ? 'Einhundertachtzig!' : st.sum === 0 ? 'No score' : String(st.sum));
-      else say(spokenDart(last));
+      const name = G.players[G.cur].name;
+      // Sound for the dart itself
+      if (st.bust) sfx.bust();
+      else if (last.v === 0) sfx.miss();
+      else if (last.n === 20 && last.m === 3) { sfx.triple20(); confetti(st.done && st.sum === 180 ? 260 : 120); }
+      else sfx.hit();
+      if (st.win) setTimeout(() => { sfx.fanfare(); confetti(260); }, 350);
+      // Voice: the dart, then the visit total when the visit is over
+      const dartWord = spokenDart(last);
+      if (st.bust) say(dartWord, 'Überworfen! Keine Punkte.');
+      else if (st.win) say(dartWord, 'Game shot! ' + name + ' gewinnt das Leg.');
+      else if (st.done) say(dartWord, st.sum === 180 ? 'Einhundertachtzig!' : st.sum === 0 ? 'Keine Punkte.' : 'Insgesamt ' + st.sum + '.');
+      else say(dartWord);
     }
-    if (st.done) detector.waitForPull();
+    // Bot darts are virtual: nothing to pull from the board.
+    if (st.done && !isBotTurn()) detector.waitForPull();
     persist(); render();
   }
 
@@ -183,9 +297,31 @@
 
   function undo() {
     if (!undoStack.length) { toast('Nichts zum Zurücknehmen'); return; }
-    G = JSON.parse(undoStack.pop()); persist();
+    clearTimeout(botTimer);
+    G = JSON.parse(undoStack.pop());
+    // Skip back over bot throws to the last human action.
+    while (undoStack.length && G.players[G.cur].bot) G = JSON.parse(undoStack.pop());
+    persist();
     detector.rearm(visitState().done);
     closeModal(); render();
+  }
+
+  // ---------------- Dart bot ----------------
+  let botTimer = null;
+  const isBotTurn = () => !!(G && !G.over && G.players[G.cur].bot);
+  function scheduleBot() {
+    clearTimeout(botTimer);
+    if (!isBotTurn() || $('#game').hidden || !$('#modal').hidden) return;
+    const st = visitState();
+    if (st.done) { botTimer = setTimeout(() => { if (isBotTurn() && !$('#game').hidden && $('#modal').hidden) nextTurn(); }, 2800); return; }
+    botTimer = setTimeout(() => {
+      if (!isBotTurn() || !$('#modal').hidden || $('#game').hidden) return;
+      const s = visitState();
+      if (s.done) return;
+      const lvl = botLevel(G.players[G.cur].bot);
+      const t = C.botThrow(s.rem, 3 - G.visit.length, G.out, lvl.sigma);
+      addDart(t.dart, { bot: true, bp: t.point });
+    }, G.visit.length ? 1100 : 1500);
   }
 
   // ---------------- Rendering ----------------
@@ -204,6 +340,7 @@
         <span class="pname"></span><span class="prem num">${rem}</span>
         <span class="pmeta"><span>Ø ${avg(p.pts, p.darts)}</span><span>${G.legDarts[i]} D</span></span>`;
       card.querySelector('.pname').textContent = p.name;
+      if (p.bot) { const tag = document.createElement('span'); tag.className = 'bottag'; tag.textContent = 'Bot ' + botLevel(p.bot).name; card.querySelector('.pmeta').prepend(tag); }
       strip.appendChild(card);
       if (i === G.cur) requestAnimationFrame(() => card.scrollIntoView({ inline: 'nearest', block: 'nearest' }));
     });
@@ -225,7 +362,7 @@
       const d = G.visit[i];
       const b = document.createElement('button');
       b.className = 'slot' + (d ? ' filled' : '') + (d && d.conf != null && d.conf < 0.45 && !d.manual ? ' unsure' : '') + (!d && i === G.visit.length && !st.done ? ' next' : '');
-      b.innerHTML = d ? `<span class="l num">${d.label}</span><span class="v">${d.v} Pkt${d.auto && !d.manual ? ' · Kamera' : ''}</span>` : `<span class="l num" style="color:var(--muted)">–</span><span class="v">Dart ${i + 1}</span>`;
+      b.innerHTML = d ? `<span class="l num">${d.label}</span><span class="v">${d.v} Pkt${d.bot ? ' · Bot' : d.auto && !d.manual ? ' · Kamera' : ''}</span>` : `<span class="l num" style="color:var(--muted)">–</span><span class="v">Dart ${i + 1}</span>`;
       b.setAttribute('aria-label', d ? `Dart ${i + 1}: ${d.label}, antippen zum Korrigieren` : `Dart ${i + 1} eintippen`);
       b.onclick = () => openPad(d ? i : G.visit.length);
       v.appendChild(b);
@@ -236,7 +373,12 @@
     v.appendChild(sum);
 
     $('#btnNext').textContent = st.win ? 'Leg!' : 'Weiter';
+    const botTurn = isBotTurn();
+    ['#btnMiss', '#btnPad', '#btnNext'].forEach(s => { $(s).disabled = botTurn; });
+    if (botTurn && stream) setStatus('bot', G.players[G.cur].name + ' wirft …');
+    else if (stream && !calibrating && $('#status').dataset.k === 'bot') detector.pulling ? setStatus('pull', 'Darts ziehen') : setStatus('ready', 'Bereit – wirf!');
     drawOverlay();
+    scheduleBot();
   }
 
   // ---------------- Modals ----------------
@@ -250,7 +392,7 @@
     const p = G.players[i];
     $('#modalCard').innerHTML = `<span class="label">Leg ${G.leg - 1}</span><h2>${escapeHtml(p.name)}</h2><p class="hint">gewinnt das Leg. Nächstes Leg beginnt ${escapeHtml(G.players[G.cur].name)}.</p>${statsTable()}<button class="primary" id="mOk">Nächstes Leg</button>`;
     $('#modal').hidden = false;
-    $('#mOk').onclick = () => { closeModal(); announceTurn(); };
+    $('#mOk').onclick = () => { closeModal(); announceTurn(); render(); };
   }
   function showMatchOver(i) {
     const p = G.players[i];
@@ -302,6 +444,7 @@
   }
   function openPad(i) {
     if (!G || G.over) return;
+    if (isBotTurn()) { toast('Der Bot ist am Zug'); return; }
     const st = visitState();
     if (i >= G.visit.length && st.done) { toast('Aufnahme ist voll – „Weiter“ drücken'); return; }
     padIndex = i; setMod(0);
@@ -515,10 +658,12 @@
     // Detected darts of the current visit
     if (G && !calibrating) {
       G.visit.forEach((d, i) => {
-        if (!d.img) return;
-        const x = d.img[0] * W, y = d.img[1] * Hh;
+        let img = d.img;
+        if (!img && d.bp && Hinv) img = C.applyH(Hinv, d.bp[0], d.bp[1]);
+        if (!img) return;
+        const x = img[0] * W, y = img[1] * Hh;
         ctx.beginPath(); ctx.arc(x, y, 7 * dpr, 0, Math.PI * 2);
-        ctx.fillStyle = d.manual ? 'rgba(147,161,152,.8)' : '#f0b54a'; ctx.fill();
+        ctx.fillStyle = d.bot ? '#5ab0f0' : d.manual ? 'rgba(147,161,152,.8)' : '#f0b54a'; ctx.fill();
         ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#000'; ctx.stroke();
         ctx.font = `800 ${15 * dpr}px Barlow Condensed, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
         ctx.lineWidth = 4 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(`${i + 1}: ${d.label}`, x + 11 * dpr, y);
@@ -539,8 +684,9 @@
     const self = {
       maskDirty: true, lastBin: null,
       reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; pulling = G ? visitState().done : false; },
-      waitForPull() { pulling = true; setStatus('pull', 'Darts ziehen'); },
-      rearm(done, newRef) { pulling = !!done; stable = 0; if (newRef) ref = null; if (stream && !calibrating) pulling ? setStatus('pull', 'Darts ziehen') : setStatus('ready', 'Bereit – wirf!'); },
+      waitForPull() { pulling = true; if (stream) setStatus('pull', 'Darts ziehen'); },
+      get pulling() { return pulling; },
+      rearm(done, newRef) { pulling = !!done; stable = 0; if (newRef) ref = null; if (stream && !calibrating && !isBotTurn()) pulling ? setStatus('pull', 'Darts ziehen') : setStatus('ready', 'Bereit – wirf!'); },
       debugCanvas() {
         if (!dbgCanvas) { dbgCanvas = document.createElement('canvas'); }
         if (dbgCanvas.width !== PW) { dbgCanvas.width = PW; dbgCanvas.height = PH; dbgCtx = dbgCanvas.getContext('2d'); }
@@ -581,7 +727,7 @@
     function blend(a, b) { for (let i = 0; i < a.length; i++) a[i] = (a[i] * 3 + b[i]) >> 2; }
 
     function tick(now) {
-      if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over) return;
+      if (!stream || calibrating || !H || video.readyState < 2 || !G || G.over || isBotTurn()) return;
       if (!$('#padSheet').hidden || !$('#modal').hidden) return;
       if (!ensureSize()) return;
       pctx.drawImage(video, 0, 0, PW, PH);
@@ -637,7 +783,7 @@
   // ---------------- Settings sheet ----------------
   $('#btnSettings').onclick = () => {
     $('#sens').value = settings.sens; $('#sensVal').textContent = settings.sens;
-    $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice;
+    $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice; $('#sfx').checked = settings.sfx !== false;
     $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake;
     $('#camToggle').textContent = stream ? 'Kamera stoppen' : 'Kamera starten';
     $('#setSheet').hidden = false;
@@ -645,6 +791,7 @@
   $('#sens').oninput = e => { settings.sens = +e.target.value; $('#sensVal').textContent = settings.sens; saveSettings(); };
   $('#tipPref').onchange = e => { settings.tipPref = e.target.value; saveSettings(); };
   $('#voice').onchange = e => { settings.voice = e.target.checked; saveSettings(); };
+  $('#sfx').onchange = e => { settings.sfx = e.target.checked; saveSettings(); if (settings.sfx) sfx.hit(); };
   $('#autoNext').onchange = e => { settings.autoNext = e.target.checked; saveSettings(); };
   $('#wake').onchange = e => { settings.wake = e.target.checked; saveSettings(); if (settings.wake) requestWake(); else if (wakeLock) wakeLock.release().catch(() => {}); };
   $('#refReset').onclick = () => { detector.reset(); $('#setSheet').hidden = true; toast('Referenz wird neu aufgenommen'); };
@@ -663,9 +810,10 @@
   }
   $('#startGame').onclick = () => {
     if ('speechSynthesis' in window) try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch {}
+    sfx.unlock();
     newGame(); showGame(); detector.reset(); say('Game on! ' + G.players[0].name + ', wirf an.');
   };
-  $('#resumeGame').onclick = () => { showGame(); detector.reset(); };
+  $('#resumeGame').onclick = () => { sfx.unlock(); showGame(); detector.reset(); };
 
   // Boot
   buildBoardSvg($('#padBoard'));
