@@ -13,10 +13,13 @@
 
   const settings = Object.assign({
     players: ['Spieler 1', 'Spieler 2'], start: 501, out: 'double', legs: 2,
-    sens: 55, tipPref: 'auto', voice: true, sfx: true, autoNext: true, wake: true, camId: ''
+    sens: 55, tipPref: 'auto', voice: true, sfx: true, autoNext: true, wake: true, camId: '', banter: true
   }, store.get('settings', {}));
   // Players are {name, bot} where bot is a level id from Core.BOT_LEVELS or null.
   settings.players = settings.players.map(p => typeof p === 'string' ? { name: p, bot: null } : p);
+  // What the detector has learned from corrections (thr offset, min-area factor, min elongation).
+  const LEARN0 = { thr: 0, area: 1, elong: 1.5, n: 0 };
+  settings.learn = Object.assign({}, LEARN0, settings.learn || {});
   const saveSettings = () => store.set('settings', settings);
   const botLevel = id => C.BOT_LEVELS.find(l => l.id === id) || C.BOT_LEVELS[2];
 
@@ -150,6 +153,65 @@
   const spokenDart = d => d.v === 0 ? 'Daneben' : d.n === 25 ? (d.m === 2 ? 'Bull' : 'fünfundzwanzig')
     : (d.m === 3 ? 'Triple ' : d.m === 2 ? 'Doppel ' : '') + d.n;
 
+  // ---------------- Banter: praise and (friendly) abuse ----------------
+  const PRAISE_T20 = [
+    'Triple 20! So sieht das aus!', 'Mitten rein. Wunderschön.', 'Das ist Weltklasse, {n}!', 'Hundert Prozent Präzision.',
+    'Da staunt sogar der Bot.', 'Feinste Handarbeit!', 'Die Sechzig sitzt. Respekt.', 'Wie mit dem Lineal gezogen.',
+    'Der Dart wollte nirgendwo anders hin.', 'Das Board sagt danke.', '{n}, du Maschine!', 'Bitte genau so weiter.',
+    'Das war Absicht, das sieht man.', 'Lehrbuch. Kapitel eins. Triple 20.', 'Pures Gold, {n}.', 'Hier wohnt die Sechzig – und du hast geklingelt.',
+    'So wirft ein Profi.', 'Kaltschnäuzig versenkt!', 'Treffer versenkt, Gegner zittert.', 'Davon träumen andere nachts.'
+  ];
+  const PRAISE_T19 = [
+    'Triple 19! Stark ausgewichen.', 'Die 57 nehmen wir gern.', 'Neunzehn mal drei – sauber!', 'Plan B mit Stil, {n}!',
+    'Unten links ist auch schön.', 'Triple 19, der Geheimtipp der Profis.', 'Das ist feinste Kurskorrektur.', 'Wer braucht schon die 20?',
+    'Siebenundfünfzig. Lecker.', 'Auch die 19 hat Gefühle – und du triffst sie.', 'Sauber in die Triple 19, {n}!', 'Elegant ausgewichen, voll getroffen.',
+    'Respekt, das Ding sitzt.', 'Die 19 freut sich über Besuch.', 'Kalt und präzise, {n}.'
+  ];
+  const ABUSE = [
+    'Das Board ist da drüben, {n}.', 'War das ein Wurf oder ein Unfall?', 'Meine Oma wirft besser – und die ist blind.',
+    'Hast du beim Werfen die Augen zu?', '{n}, das war nichts. Gar nichts.', 'Respekt, so knapp an allem vorbei.',
+    'Der Dart hat sich geschämt und ist abgehauen.', 'Hast du schon mal überlegt, Schach zu spielen?', 'Das tut sogar der Kamera weh.',
+    'Mit Anlauf daneben.', 'Wurfarm im Energiesparmodus?', 'Das war ein Wurf für die Statistik. Die schlechte.',
+    'Das Board fühlt sich ignoriert.', 'Wo hast du denn hingezielt? Auf die Tapete?', 'Ein Dart, ein Drama.',
+    'Selbst der Bot lacht gerade.', 'Klassischer Fall von: knapp daneben ist auch vorbei.', 'Ich hab schon Fliegen besser landen sehen.',
+    'Zielwasser vergessen, {n}?', 'Den Wurf lassen wir mal unkommentiert. Nein, doch nicht: furchtbar.', 'Das gibt Punktabzug in der B-Note.',
+    'Ist das ein neuer Trickwurf?', 'Hast du die Brille zu Hause gelassen?', 'Bewerbung für die Kreisliga abgelehnt.',
+    'Da war mehr Wind als Wurf.', 'Mutig. Falsch, aber mutig.', 'So viel Pech kann man gar nicht haben – das ist Talent.',
+    'Der Dart wollte eigentlich zur Toilette.', 'Grandios! Grandios schlecht.', 'Das war so schlecht, das tut beim Zuschauen weh.',
+    '{n}, ich hab dich lieb, aber das war nix.', 'Wenn du so weitermachst, wirft der nächste Spieler für dich.', 'Kurze Frage: Spielen wir dasselbe Spiel?',
+    'Der Wurf hatte keine Ahnung, wo er hin soll.', 'Die Eins? Wirklich? Die EINS?', 'Ganz knapp an der Sechzig vorbei. Also so 59 Punkte knapp.',
+    'Das nennt man dann wohl kreative Zielwahl.', 'Taktischer Fehlwurf, um den Gegner in Sicherheit zu wiegen?', 'Dein Dart hat Höhenangst.',
+    'Hast du gerade mit links geworfen?', 'Der Pfeil war schneller beleidigt als ich.', 'Bitte nicht nochmal so. Für uns alle.',
+    'Glückwunsch, du hast die Wand getroffen.', 'Der war für die Nachbarn.', 'Dartsport-Verband wurde bereits informiert.',
+    'Das kommt in die Pannen-Show.', 'Super Wurf – für ein anderes Board.', 'Und das vor Publikum!',
+    'Das war kein Dart, das war ein Hilferuf.', 'Die Fünf sagt danke für den Mitleidsbesuch.', 'Die Eins: die Lieblingszahl von Verlierern.',
+    'Hätte, hätte, Fahrradkette.', 'Das gibt einen Platz in der Hall of Shame.', 'Würdest du bitte das Board treffen? Nur so als Idee.',
+    'Ich zähl das jetzt mal als Aufwärmen.', 'Neuer Rekord im Danebenwerfen!', 'Der Dart wollte mal was anderes sehen.',
+    'Treffer! Leider im falschen Feld.', 'Da hat die Hand was anderes gemacht als der Kopf.', 'Der Wurf hat Charakter. Schlechten.',
+    'Kopf hoch, schlimmer geht immer. Oder doch nicht.', 'Wenn Danebenwerfen olympisch wäre: Gold.', 'Die Zielscheibe hat dich nicht verdient. Oder du sie nicht.',
+    'Das war Mitleid mit dem Gegner, oder?', 'Lass mich raten: der Boden war rutschig.', 'Und wieder ein Dart für die Tonne.',
+    'Physik: eins. {n}: null.', 'Ups. Und nochmal ups.', 'Also DAS wird kein Highlight-Video.', 'Hast du kurz an was anderes gedacht?',
+    'Das Board ist rund, {n}. Ganz rund. Da vorne.', 'Ein Wurf wie ein Montagmorgen.', 'Gegner freut sich, Publikum weint.',
+    'Mit so einer Leistung gewinnt man höchstens Mitleid.', 'Das war unterirdisch. Und zwar im Keller.', 'Ganz ehrlich? Ich hab nix gesehen. Besser so.',
+    'Der Dart hat gekündigt.', 'Gut, dass das keiner gefilmt hat. Ach doch, ich.', 'Die Kamera möchte das bitte vergessen.'
+  ];
+  const bags = new Map();
+  /** Next phrase from a shuffled bag, so nothing repeats until all were used. */
+  function pick(list, name) {
+    let b = bags.get(list);
+    if (!b || !b.length) { b = list.map((_, i) => i).sort(() => Math.random() - 0.5); bags.set(list, b); }
+    return list[b.pop()].replace(/\{n\}/g, name);
+  }
+  /** Phrase for this dart, or null. Abuse only for 1, 5 or a miss while no finish is on. */
+  function banterFor(d, remBefore, dartsLeft, name, out) {
+    if (settings.banter === false) return null;
+    if (d.n === 20 && d.m === 3) return pick(PRAISE_T20, name);
+    if (d.n === 19 && d.m === 3) return pick(PRAISE_T19, name);
+    const bad = d.v === 0 || d.n === 1 || d.n === 5;
+    if (bad && !C.checkout(remBefore, 3, out)) return pick(ABUSE, name); // finish range: a checkout exists from here
+    return null;
+  }
+
   // ---------------- Setup screen ----------------
   function renderPlayers() {
     const box = $('#playerList'); box.innerHTML = '';
@@ -251,6 +313,7 @@
   function editDart(i, d) {
     snapshot();
     if (advance) advance.until = performance.now() + ADV_MS; // corrected: give the full time again
+    if (G.visit[i] && G.visit[i].auto && d.v === 0) detector.learnPhantom(); // camera saw a dart that was none
     G.visit[i] = Object.assign({}, d, { manual: true });
     G.visit = G.visit.slice(0, 3);
     afterChange(false);
@@ -267,12 +330,16 @@
       else if (last.n === 20 && last.m === 3) { sfx.triple20(); confetti(st.done && st.sum === 180 ? 260 : 120); }
       else sfx.hit();
       if (st.win) setTimeout(() => { sfx.fanfare(); confetti(260); }, 350);
-      // Voice: the dart, then the visit total when the visit is over
+      // Voice: the dart, a comment, then the visit total when the visit is over
       const dartWord = spokenDart(last);
+      const idx = G.visit.length - 1;
+      const remBefore = G.rem[G.cur] - G.visit.slice(0, idx).reduce((a, d) => a + d.v, 0);
+      const line = st.bust || st.win ? null : banterFor(last, remBefore, 3 - idx, name, G.out);
+      if (line) toast(line, 3200);
       if (st.bust) say(dartWord, 'Überworfen! Keine Punkte.');
       else if (st.win) say(dartWord, 'Game shot! ' + name + ' gewinnt das Leg.');
-      else if (st.done) say(dartWord, callScore(st.sum));
-      else say(dartWord);
+      else if (st.done) say(dartWord, line, callScore(st.sum));
+      else say(dartWord, line);
     }
     // Bot darts are virtual: nothing to pull from the board.
     if (st.done && !isBotTurn()) {
@@ -520,7 +587,7 @@
     setTimeout(() => {
       $('#padSheet').hidden = true;
       if (padIndex < G.visit.length) editDart(padIndex, d);
-      else addDart(d, { manual: true });
+      else { if (d.v > 0) detector.learnMiss(d); addDart(d, { manual: true }); }
     }, 140);
   }
   $$('[data-close]').forEach(b => b.onclick = () => b.closest('.scrim').hidden = true);
@@ -719,7 +786,8 @@
     const dpr = W / (overlay.clientWidth || 1);
     if (debugView && detector.lastBin) {
       ctx.globalAlpha = 0.65; ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(detector.debugCanvas(), 0, 0, W, Hh); ctx.globalAlpha = 1;
+      const q = detector.procRect, c0 = crop(), [ux, uy] = v2d(q.x0, q.y0);
+      ctx.drawImage(detector.debugCanvas(), ux * W, uy * Hh, q.w / c0.w * W, q.w / c0.w * Hh); ctx.globalAlpha = 1;
     }
     if (Hinv) {
       const sh = calibrating ? [0, 0] : camShift;
@@ -766,6 +834,19 @@
         ctx.beginPath(); ctx.moveTo(lx + L / 2, ly + 6 * dpr); ctx.lineTo(lx + L / 2, ly + L - 6 * dpr); ctx.moveTo(lx + 6 * dpr, ly + L / 2); ctx.lineTo(lx + L - 6 * dpr, ly + L / 2); ctx.stroke();
       }
     }
+    // Live preview: where a dart seems to have landed, before it is confirmed
+    if (G && !calibrating && detector.preview.length) {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
+      for (const p of detector.preview) {
+        const [dx, dy] = v2d(p.img[0] + camShift[0], p.img[1] + camShift[1]);
+        const x = dx * W, y = dy * Hh;
+        ctx.setLineDash([5 * dpr, 4 * dpr]); ctx.lineWidth = 2.5 * dpr; ctx.strokeStyle = `rgba(255,197,61,${0.55 + 0.45 * pulse})`;
+        ctx.beginPath(); ctx.arc(x, y, (12 + 4 * pulse) * dpr, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+        ctx.font = `800 ${15 * dpr}px Barlow Condensed, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 4 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(p.label + '?', x + 18 * dpr, y);
+        ctx.fillStyle = '#ffc53d'; ctx.fillText(p.label + '?', x + 18 * dpr, y);
+      }
+    }
     // Detected darts of the current visit
     if (G && !calibrating) {
       G.visit.forEach((d, i) => {
@@ -798,8 +879,17 @@
     // Stabilisation: every frame is lined up with the anchor (the picture the calibration belongs to).
     let tracker = null, cam = [0, 0], trackBad = 0, camEdge = 1;
     let dbgCanvas = null, dbgCtx = null;
+    let pr = { x0: 0, y0: 0, w: 1 };  // processed part of the video (normalised), square in normalised units
+    const p2v = (x, y) => [pr.x0 + x / PW * pr.w, pr.y0 + y / PH * pr.w];
+    const v2p = (vx, vy) => [(vx - pr.x0) / pr.w * PW, (vy - pr.y0) / pr.w * PH];
+    let model = null, dirAt = null; // camera model: how a dart must look at each spot
+    let recent = [];                 // blobs seen but not counted, for learning from corrections
     const self = {
       lastBin: null,
+      preview: [],
+      get procRect() { return pr; },
+      learnMiss(d) { learn(d, true); },
+      learnPhantom() { learn(null, false); },
       reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; emptyRef = null; pulling = G ? visitState().done : false; },
       waitForPull() {
         pulling = true;
@@ -824,27 +914,87 @@
     function ensureSize() {
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw) return false;
-      const w = 360, h = Math.round(w * vh / vw);
+      const w = 480, h = Math.round(w * vh / vw); // higher resolution: thin shafts stay visible
       if (w !== PW || h !== PH) { PW = w; PH = h; proc.width = PW; proc.height = PH; needMask = true; ref = prev = null; }
       if (needMask && H) {
+        // Analyse only the board region, always at full processing resolution – independent of zoom
+        // and distance, so a far-away board does not shrink darts to single pixels.
+        let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+        for (let k = 0; k < 72; k++) {
+          const a = k / 72 * Math.PI * 2, [vx, vy] = C.applyH(Hinv, 236 * Math.sin(a), -236 * Math.cos(a));
+          x0 = Math.min(x0, vx); x1 = Math.max(x1, vx); y0 = Math.min(y0, vy); y1 = Math.max(y1, vy);
+        }
+        const pw = Math.min(1, Math.max(x1 - x0, y1 - y0) * 1.06);
+        pr = { w: pw, x0: Math.min(1 - pw, Math.max(0, (x0 + x1) / 2 - pw / 2)), y0: Math.min(1 - pw, Math.max(0, (y0 + y1) / 2 - pw / 2)) };
         mask = new Uint8Array(PW * PH); maskCount = 0;
         for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++) {
-          const [vx, vy] = d2v((x + 0.5) / PW, (y + 0.5) / PH);
+          const [vx, vy] = p2v(x + 0.5, y + 0.5);
           const [bx, by] = C.applyH(H, vx, vy);
           if (Math.hypot(bx, by) < 228) { mask[y * PW + x] = 1; maskCount++; } // whole board incl. number ring: flights of double darts hang out there
         }
         needMask = false; ref = prev = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
+        buildModel();
       }
       return !!mask;
     }
     function params() {
-      const s = settings.sens; // 1..100
+      const s = settings.sens, L = settings.learn, rb = Math.sqrt(maskCount / Math.PI) * 170 / 228, k = Math.max(0.5, (rb / 120) * (rb / 120)); // board radius in proc px → area scale
       return {
-        thr: Math.round(52 - s * 0.36),            // per-pixel colour difference
-        minArea: Math.round(12 + (100 - s) * 0.55), // pixels at 360px width
-        motion: 10,
-        maxArea: Math.max(400, maskCount * 0.16)
+        thr: Math.max(14, Math.round(52 - s * 0.36 + L.thr)),            // per-pixel colour difference
+        minArea: Math.round((12 + (100 - s) * 0.55) * k * L.area),         // pixels
+        minElong: L.elong,
+        motion: Math.round(10 * k),
+        maxArea: Math.max(400 * k, maskCount * 0.16)
       };
+    }
+    /** Camera model from the calibration: expected direction/length of a dart at a processing pixel. */
+    function buildModel() {
+      model = null; dirAt = null;
+      if (!Hinv || !video.videoWidth) return;
+      model = C.dartModel(Hinv, video.videoWidth, video.videoHeight);
+      const toProc = ([vx, vy]) => v2p(vx, vy);
+      dirAt = (x, y) => {
+        const [vx, vy] = p2v(x, y);
+        const [bx, by] = C.applyH(H, vx, vy);
+        const [fx, fy] = toProc(model.project(bx, by, 110)); // flight end of a ~11 cm dart
+        const [tx, ty] = toProc(model.project(bx, by, 0));
+        const len = Math.hypot(fx - tx, fy - ty) || 1e-6;
+        return { ex: (fx - tx) / len, ey: (fy - ty) / len, len };
+      };
+    }
+    /** Remember blobs that were not counted (for learning when the player enters the dart by hand). */
+    function remember(list, now) {
+      for (const r of list) {
+        const [vx, vy] = p2v(r.x, r.y), [bx, by] = C.applyH(H, vx, vy);
+        recent.push({ t: now, bx, by, area: r.area, elong: r.elong, minArea: params().minArea });
+      }
+      recent = recent.filter(r => now - r.t < 15000).slice(-20);
+    }
+    /** Adapt thresholds from a correction: a missed dart (miss=true) or a phantom. */
+    function learn(d, miss) {
+      if (!stream || !H || calibrating) return;
+      const L = settings.learn, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      if (miss) {
+        const [ax, ay] = C.aimPoint(d), now = performance.now();
+        const near = recent.filter(r => now - r.t < 15000)
+          .map(r => ({ r, dist: Math.hypot(r.bx - ax, r.by - ay), same: C.scoreAt(r.bx, r.by).n === d.n }))
+          .filter(o => o.same || o.dist < 45).sort((a, b) => a.dist - b.dist)[0];
+        if (near) {
+          // The camera saw it but did not trust it: accept blobs like this one from now on.
+          L.elong = clamp(Math.min(L.elong, near.r.elong - 0.05), 1.15, 2.5);
+          L.area = clamp(Math.min(L.area, L.area * near.r.area / near.r.minArea * 0.95), 0.35, 2.5);
+          recent = recent.filter(r => r !== near.r);
+          toast('Gelernt: solche Darts zähle ich ab jetzt mit', 2600);
+        } else {
+          // Nothing seen at all: look more closely.
+          L.thr = clamp(L.thr - 2, -16, 16); L.area = clamp(L.area * 0.9, 0.35, 2.5);
+          toast('Gelernt: Erkennung jetzt etwas empfindlicher', 2600);
+        }
+      } else {
+        L.thr = clamp(L.thr + 2, -16, 16); L.area = clamp(L.area * 1.1, 0.35, 2.5); L.elong = clamp(L.elong + 0.05, 1.15, 2.5);
+        toast('Gelernt: Erkennung jetzt etwas strenger', 2600);
+      }
+      L.n++; saveSettings();
     }
     function blend(a, b) { for (let i = 0; i < a.length; i++) a[i] = (a[i] * 3 + b[i]) >> 2; }
 
@@ -853,7 +1003,7 @@
 
     /** The camera has settled somewhere else: move the calibration there and start a new anchor. */
     function bake() {
-      const cr = crop(), mx = cam[0] / PW * cr.w, my = cam[1] / PH * cr.w;
+      const mx = cam[0] / PW * pr.w, my = cam[1] / PH * pr.w;
       calib = calib.map(([x, y]) => [x + mx, y + my]); store.set('calib', calib);
       updateH(); // rebuilds mask, anchor and references on the next frame
       emptyRef = null; cam = [0, 0]; camShift = [0, 0];
@@ -895,9 +1045,9 @@
       const e = changed(cur, emptyRef, P);
       if (e.count > P.maxArea) return false; // someone is still in front of the board
       if (pullSpots.length) {
-        const cr = crop(), rad = Math.max(4, Math.round(PW / 60));
+        const rad = Math.max(4, Math.round(PW / 60));
         for (const [vx, vy] of pullSpots) {
-          const px = Math.round((vx - cr.x0) / cr.w * PW), py = Math.round((vy - cr.y0) / cr.w * PH);
+          const [qx, qy] = v2p(vx, vy), px = Math.round(qx), py = Math.round(qy);
           let hit = 0, tot = 0;
           for (let yy = py - rad; yy <= py + rad; yy++) for (let xx = px - rad; xx <= px + rad; xx++) {
             if (xx < 0 || yy < 0 || xx >= PW || yy >= PH) continue;
@@ -917,17 +1067,17 @@
       if (!stream || calibrating || recalBusy || !H || video.readyState < 2 || !G || G.over) return;
       if (isBotTurn() || !$('#padSheet').hidden || !$('#modal').hidden) { paused = true; return; }
       if (!ensureSize()) return;
-      const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
-      pctx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, PW, PH);
+      const vw = video.videoWidth, vh = video.videoHeight;
+      pctx.drawImage(video, pr.x0 * vw, pr.y0 * vh, pr.w * vw, pr.w * vh, 0, 0, PW, PH);
       const raw = pctx.getImageData(0, 0, PW, PH).data;
       const L = C.luma(raw, PW, PH);
       if (!tracker) { tracker = C.makeTracker(L, mask, PW, PH); cam = [0, 0]; trackBad = 0; }
       const tr = tracker.track(L, cam);
       if (tr.ok) { cam = [tr.dx, tr.dy]; trackBad = 0; camEdge = Math.max(camEdge, Math.ceil(Math.max(Math.abs(cam[0]), Math.abs(cam[1]))) + 2); } else trackBad++;
-      camShift = [cam[0] / PW * cr.w, cam[1] / PH * cr.w];
+      camShift = [cam[0] / PW * pr.w, cam[1] / PH * pr.w];
       const cur = Math.abs(cam[0]) < 0.05 && Math.abs(cam[1]) < 0.05 ? raw : C.warpShift(raw, PW, PH, cam[0], cam[1]);
       // Board out of reach of the tracker for a while and the picture is calm: find it again.
-      if (trackBad > 40 && !pulling && prev && changed(cur, prev, params()).count <= params().motion) { trackBad = -60; autoRecal(); return; }
+      if (trackBad > 40 && !pulling && prev && C.motionCount(cur, prev, mask, PW, PH, params().thr, null, camEdge) <= params().motion) { trackBad = -60; autoRecal(); return; }
       if (!ref) {
         ref = copy(cur); prev = copy(cur); stable = 0; armed = false; cand = null;
         if (!emptyRef && !pulling && G.visit.length === 0) emptyRef = copy(cur);
@@ -938,8 +1088,9 @@
         paused = false; armed = true; cand = null; stable = 0; prev = copy(cur); return;
       }
       const P = params();
-      const m = changed(cur, prev, P);
+      const m = { count: C.motionCount(cur, prev, mask, PW, PH, P.thr, C.meanOffset(cur, prev, mask, PW, PH), camEdge) };
       prev = copy(cur);
+      self.info = { ok: tr.ok, inl: +tr.inl.toFixed(2), err: +tr.err.toFixed(1), raw: [+tr.dx.toFixed(1), +tr.dy.toFixed(1)], cam: cam.map(v => +v.toFixed(1)), motion: m.count, stable, armed, thr: P.motion };
       if (m.count > P.motion) {
         stable = 0; cand = null;
         if (m.count >= Math.max(P.motion * 2, P.minArea * 0.6)) armed = true;
@@ -947,6 +1098,15 @@
         return;
       }
       stable++;
+      // Live preview while the dart settles: show where it seems to be right away.
+      if (stable < 5 && armed && !pulling && stable >= 1) {
+        const pv = changed(cur, ref, P);
+        if (pv.count >= P.minArea && pv.count <= P.maxArea) {
+          const hs = C.findDarts(pv.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3 - G.visit.length, tipPref: settings.tipPref, dirAt });
+          self.preview = hs.map(hh => { const img = p2v(hh.x, hh.y); return { img, label: C.scoreAt(...C.applyH(H, img[0], img[1])).label }; });
+          if (self.preview.length) setStatus('hit', 'Dart landet … ' + self.preview.map(p => p.label).join(', ') + '?');
+        }
+      }
       if (stable < 5 || now < cooldownUntil) return; // ~0.4 s quiet: the dart has stopped wobbling
       const ch = changed(cur, ref, P);
       self.lastBin = ch.bin;
@@ -968,7 +1128,7 @@
       }
 
       if (ch.count < P.minArea) {
-        bigSince = 0; cand = null; armed = false;
+        bigSince = 0; cand = null; armed = false; if (self.preview.length) { self.preview = []; drawOverlay(); }
         if (stable % 8 === 0) {
           blend(ref, cur); // follow slow light changes
           if (G.visit.length === 0) emptyRef = copy(ref);
@@ -978,9 +1138,14 @@
         return;
       }
       if (!armed) {
-        // Changed without anything moving in front of the camera: not a throw.
-        if (stable >= 12) { ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; }
-        return;
+        // Changed without visible movement. A clear dart shape still counts (it can land between two frames);
+        // anything else is light drift and gets absorbed.
+        const hs = ch.count <= P.maxArea ? C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3 - G.visit.length, tipPref: settings.tipPref, dirAt }) : [];
+        if (hs.some(hh => !hh.unsure && hh.conf >= 0.5)) armed = true;
+        else {
+          if (stable >= 12) { remember(hs.concat(hs.rejected || []), now); ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; self.preview = []; }
+          return;
+        }
       }
       if (ch.count > P.maxArea) {
         cand = null;
@@ -1011,26 +1176,44 @@
         }
       }
       const left = 3 - G.visit.length;
-      const hits = C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: 1.5, max: left, tipPref: settings.tipPref });
-      ref = copy(cur); stable = 0; armed = false; cooldownUntil = now + 300;
+      const hits = C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: left, tipPref: settings.tipPref, dirAt });
+      const ref0 = ref;
+      ref = copy(cur); stable = 0; armed = false; cooldownUntil = now + 300; self.preview = [];
+      remember(hits.rejected, now);
+      self.lastHits = hits.map(hh => ({ x: hh.x, y: hh.y, area: hh.area, elong: +hh.elong.toFixed(2), len: +hh.length.toFixed(1), exp: hh.exp && { ex: +hh.exp.ex.toFixed(2), ey: +hh.exp.ey.toFixed(2), len: +hh.exp.len.toFixed(1) }, extrap: hh.extrap, align: hh.align && +hh.align.toFixed(2), unsure: !!hh.unsure, tipAtHigh: hh.tipAtHigh, axis: hh.axis }));
       if (!hits.length) {
         if (hits.rejected.length) setStatus('ready', 'Fleck ignoriert – kein Dart');
         return;
       }
+      // Follow each dart's axis to the real tip with a finer threshold (hidden barrel / thin point).
+      const offT = C.meanOffset(cur, ref0, mask, PW, PH);
+      for (const hit of hits) {
+        if (!hit.exp || settings.tipPref !== 'auto') continue;
+        let ux = hit.x - 0.5 - hit.axis.cx, uy = hit.y - 0.5 - hit.axis.cy; const ul = Math.hypot(ux, uy);
+        if (ul < 2) { ux = -hit.exp.ex; uy = -hit.exp.ey; } else { ux /= ul; uy /= ul; }
+        const full = hit.exp.len * 140 / 110;
+        const [nx2, ny2] = C.traceTip(cur, ref0, PW, PH, hit.x - 0.5, hit.y - 0.5, ux, uy, Math.round(Math.max(3, Math.min(full * 0.5, full - hit.length + 4))), Math.max(10, P.thr * 0.45), offT);
+        hit.x = nx2 + 0.5; hit.y = ny2 + 0.5;
+      }
       // Several darts can land between two checks (quick throws): count each one.
       const labels = [];
       for (const hit of hits) {
-        const [nx, ny] = d2v(hit.x / PW, hit.y / PH);
+        const [nx, ny] = p2v(hit.x, hit.y);
         const [bx, by] = C.applyH(H, nx, ny);
         const d = C.scoreAt(bx, by);
         labels.push(d.label);
         addDart(d, { auto: true, img: [nx, ny], conf: +hit.conf.toFixed(2) });
       }
-      if (!visitState().done) setStatus('hit', (hits.length > 1 ? hits.length + ' Darts: ' : 'Erkannt: ') + labels.join(', '));
+      if (!visitState().done) setStatus('hit', (hits.length > 1 ? hits.length + ' Darts: ' : 'Erkannt: ') + labels.join(', ') + (hits.some(hh => hh.unsure) ? ' – bitte prüfen' : ''));
     }
-    let last = 0;
+    let last = 0, drawnShift = [0, 0];
     (function loop(t) {
-      if (t - last > 80) { last = t; try { tick(t); } catch (e) { console.error(e); } }
+      if (t - last > 80) {
+        last = t;
+        try { tick(t); } catch (e) { console.error(e); }
+        // Keep the overlay in step with the camera shift and let the preview ring pulse.
+        if (self.preview.length || Math.abs(camShift[0] - drawnShift[0]) + Math.abs(camShift[1] - drawnShift[1]) > 0.0008) { drawnShift = camShift.slice(); drawOverlay(); }
+      }
       requestAnimationFrame(loop);
     })(0);
     return self;
@@ -1040,7 +1223,9 @@
   $('#btnSettings').onclick = () => {
     $('#sens').value = settings.sens; $('#sensVal').textContent = settings.sens;
     $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice; fillVoiceSelect(); $('#voiceRate').value = settings.voiceRate || 1; $('#sfx').checked = settings.sfx !== false;
-    $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake;
+    $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake; $('#banter').checked = settings.banter !== false;
+    const L = settings.learn;
+    $('#learnInfo').textContent = L.n ? `${L.n} Korrektur${L.n === 1 ? '' : 'en'} gelernt (Schwelle ${L.thr > 0 ? '+' : ''}${L.thr}, Mindestgröße ×${L.area.toFixed(2)}, Form ab ${L.elong.toFixed(2)})` : 'Noch nichts gelernt.';
     $('#camToggle').textContent = stream ? 'Kamera stoppen' : 'Kamera starten';
     $('#setSheet').hidden = false;
   };
@@ -1053,6 +1238,8 @@
   $('#sfx').onchange = e => { settings.sfx = e.target.checked; saveSettings(); if (settings.sfx) sfx.hit(); };
   $('#autoNext').onchange = e => { settings.autoNext = e.target.checked; saveSettings(); };
   $('#wake').onchange = e => { settings.wake = e.target.checked; saveSettings(); if (settings.wake) requestWake(); else if (wakeLock) wakeLock.release().catch(() => {}); };
+  $('#banter').onchange = e => { settings.banter = e.target.checked; saveSettings(); };
+  $('#learnReset').onclick = () => { settings.learn = Object.assign({}, LEARN0); saveSettings(); $('#learnInfo').textContent = 'Noch nichts gelernt.'; toast('Gelerntes zurückgesetzt'); };
   $('#refReset').onclick = () => { detector.reset(); $('#setSheet').hidden = true; toast('Referenz wird neu aufgenommen'); };
 
   // ---------------- Screens ----------------
@@ -1082,5 +1269,5 @@
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Expose for testing
-  window.OcheCam = { addDart: (n, m) => addDart(C.dart(n, m), { manual: true }), nextTurn, get game() { return G; }, visitState };
+  window.OcheCam = { addDart: (n, m) => addDart(C.dart(n, m), { manual: true }), nextTurn, get game() { return G; }, visitState, detInfo: () => detector.info, det: () => detector };
 })();

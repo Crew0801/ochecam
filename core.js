@@ -156,7 +156,7 @@
     return { bin, count };
   }
 
-  /** Remove isolated noise: keep a pixel only if >= 2 of its 4 neighbours are set. */
+  /** Remove isolated noise: keep a pixel only if >= 2 of its 8 neighbours are set (thin diagonal shafts survive). */
   function denoise(bin, w, h) {
     const out = new Uint8Array(w * h);
     let count = 0;
@@ -164,7 +164,7 @@
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
         if (!bin[i]) continue;
-        const nb = bin[i - 1] + bin[i + 1] + bin[i - w] + bin[i + w];
+        const nb = bin[i - 1] + bin[i + 1] + bin[i - w] + bin[i + w] + bin[i - w - 1] + bin[i - w + 1] + bin[i + w - 1] + bin[i + w + 1];
         if (nb >= 2) { out[i] = 1; count++; }
       }
     }
@@ -218,17 +218,63 @@
 
   /**
    * All new darts in a binary change mask, biggest first.
-   * opts: minArea, minElong (shape filter against blobs of light/noise), max, tipPref.
-   * Returns [{x, y, area, elong, conf, ...}] in mask pixel coords; rejected blobs in .rejected.
+   * opts: minArea, minElong, max, tipPref, minLen, and dirAt(x, y) → {ex, ey, len}: the direction (unit) and
+   * length in pixels a dart sticking out of the board at (x, y) must have in the picture (from the camera model).
+   * A dart seen almost head-on looks compact, so the shape filter is relaxed where the model expects that.
+   * Uncertain finds are returned with unsure: true. Returns [{x, y, area, elong, conf, ...}]; rejected in .rejected.
    */
   function findDarts(bin, w, h, opts) {
     opts = opts || {};
     const minArea = opts.minArea || 25, minElong = opts.minElong || 1.5, max = opts.max || 3;
+    const minLen = opts.minLen || Math.max(6, w / 60);
     const found = [], rejected = [];
-    for (const c of clusters(bin, w, h)) {
-      if (c.pts.length < minArea) break;
+    let cl = clusters(bin, w, h);
+    // Camera model: parts lying along the direction a dart must have at that spot belong to one dart
+    // (a dark shaft over a black field is invisible, so tip and flight come apart).
+    if (opts.dirAt && cl.length > 1) {
+      const cen = c => [(c.minx + c.maxx) / 2, (c.miny + c.maxy) / 2];
+      let merged = true;
+      while (merged) {
+        merged = false;
+        outer: for (let i = 0; i < cl.length; i++) for (let j = i + 1; j < cl.length; j++) {
+          const [ax, ay] = cen(cl[i]), [bx, by] = cen(cl[j]);
+          const e = opts.dirAt(ax, ay), vx = bx - ax, vy = by - ay;
+          const along = vx * e.ex + vy * e.ey, across = Math.abs(-vx * e.ey + vy * e.ex);
+          const reach = e.len * 1.25 + 6, side = Math.max(6, w / 70);
+          // Two complete darts (each about as long as a dart must be) stay apart, e.g. a tight T20 group.
+          const ext = c => Math.abs((c.maxx - c.minx) * e.ex) + Math.abs((c.maxy - c.miny) * e.ey);
+          const bothWhole = ext(cl[i]) >= e.len * 0.7 && ext(cl[j]) >= e.len * 0.7;
+          if (!bothWhole && Math.abs(along) <= reach && across <= side + Math.abs(along) * 0.15) {
+            const a = cl[i], b = cl[j];
+            a.pts = a.pts.concat(b.pts); a.minx = Math.min(a.minx, b.minx); a.maxx = Math.max(a.maxx, b.maxx); a.miny = Math.min(a.miny, b.miny); a.maxy = Math.max(a.maxy, b.maxy);
+            cl.splice(j, 1); merged = true; break outer;
+          }
+        }
+      }
+      cl.sort((a, b) => b.pts.length - a.pts.length);
+    }
+    for (const c of cl) {
+      const area = c.pts.length;
+      if (area < minArea * 0.3) break;
       const r = analyzeDart(c.pts, w, opts);
-      if (r.elong >= minElong && r.length >= 6) found.push(r); else rejected.push(r);
+      const exp = r.exp;
+      // Short expected projection (camera looks along the darts) → compact blobs are fine.
+      const needElong = exp ? 1 + (minElong - 1) * Math.min(1, exp.len / 30) : minElong;
+      if (area >= minArea && r.elong >= needElong && r.length >= Math.min(minLen, exp ? exp.len * 0.6 + 3 : minLen)) {
+        // Long and thin but across the direction a dart must have: keep, but ask for a check.
+        if (exp && exp.len >= 14 && r.elong >= 2.2 && r.align < 0.3) { r.unsure = true; r.conf = Math.min(r.conf, 0.3); }
+        found.push(r);
+      } else if (area >= minArea * 1.4 && r.elong >= 1.1) {
+        // Compact blob (flight seen from behind, shaft hidden): dart, but position less certain.
+        if (exp) { const k = Math.min(exp.len, r.length + 2) * 0.6; r.x = r.axis.cx + 0.5 - exp.ex * k; r.y = r.axis.cy + 0.5 - exp.ey * k; }
+        else { r.x = r.axis.cx + 0.5; r.y = r.axis.cy + 0.5; }
+        r.unsure = true; r.conf = Math.min(r.conf, 0.3);
+        found.push(r);
+      } else if (area >= minArea * 0.5 && r.elong >= 3 && r.length >= minLen * 1.5) {
+        // Thin shaft only (flight hidden behind another dart, or similar colour as the board).
+        r.unsure = true; r.conf = Math.min(r.conf, 0.3);
+        found.push(r);
+      } else rejected.push(r);
       if (found.length >= max) break;
     }
     found.rejected = rejected;
@@ -285,8 +331,12 @@
 
     let tipAtHigh;
     const highY = uy; // image-y direction of the "high" end
+    // Camera model: which way must a dart at this spot point in the picture?
+    const exp = opts.dirAt ? opts.dirAt(mx, my) : null;
+    const align = exp ? Math.abs(ux * exp.ex + uy * exp.ey) : 0;
     if (opts.tipPref === 'up') tipAtHigh = highY < 0;
     else if (opts.tipPref === 'down') tipAtHigh = highY > 0;
+    else if (exp && exp.len >= 4 && align >= 0.35) tipAtHigh = ux * exp.ex + uy * exp.ey < 0; // flight lies along +exp
     else tipAtHigh = wHigh < wLow;
 
     // Average of the extreme 5% at the tip end.
@@ -298,13 +348,110 @@
     }
     tx /= tc; ty /= tc;
 
+    // Camera model: is the visible part clearly shorter than a whole dart, with the wide flight at the far end?
+    // Then the front is hidden (silver barrel on a light field, very thin point): go back one dart length.
+    let extrap = false;
+    if (exp && exp.len >= 8 && (!opts.tipPref || opts.tipPref === 'auto')) {
+      const full = exp.len * (opts.dartLen || 140) / 110;
+      const al = new Float32Array(n), pe = new Float32Array(n);
+      let amin = Infinity, amax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const dx = pts[i] % w - mx, dy = ((pts[i] / w) | 0) - my;
+        al[i] = dx * exp.ex + dy * exp.ey; pe[i] = -dx * exp.ey + dy * exp.ex;
+        if (al[i] < amin) amin = al[i]; if (al[i] > amax) amax = al[i];
+      }
+      const ext = amax - amin;
+      let nlo = Infinity, nhi = -Infinity, flo = Infinity, fhi = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (al[i] <= amin + ext * 0.25) { if (pe[i] < nlo) nlo = pe[i]; if (pe[i] > nhi) nhi = pe[i]; }
+        if (al[i] >= amax - ext * 0.25) { if (pe[i] < flo) flo = pe[i]; if (pe[i] > fhi) fhi = pe[i]; }
+      }
+      const wNear = nhi - nlo + 1, wFar = fhi - flo + 1;
+      if (ext < full * 0.7 && wFar >= wNear * 1.3) {
+        tx = mx + exp.ex * (amax - full); ty = my + exp.ey * (amax - full);
+        extrap = true;
+      }
+    }
+
     const ratio = Math.max(wLow, wHigh) / Math.max(1, Math.min(wLow, wHigh));
     let conf = Math.min(1, (elong - 1) / 3) * 0.6 + Math.min(1, (ratio - 1) / 1.5) * 0.4;
     if (opts.tipPref && opts.tipPref !== 'auto') conf = Math.min(1, (elong - 1) / 3);
+    else if (exp && exp.len >= 4 && align >= 0.35) conf = Math.min(1, (elong - 1) / 3) * 0.5 + align * 0.5;
     return {
-      x: tx + 0.5, y: ty + 0.5, area: n, length: len, elong, conf,
+      x: tx + 0.5, y: ty + 0.5, area: n, length: len, elong, conf, exp, align, extrap,
       axis: { ux, uy, cx: mx, cy: my, umin, umax }, tipAtHigh
     };
+  }
+
+  /**
+   * Follow a dart's axis from its visible front end further towards the tip, in a narrow corridor and with a
+   * much finer threshold than the general change detection (a silver barrel on a cream field barely differs).
+   * (x, y): current tip, (dx, dy): unit direction towards the tip. Returns the refined tip [x, y].
+   */
+  function traceTip(cur, ref, w, h, x, y, dx, dy, maxSteps, thr, off) {
+    const o = off || [0, 0, 0];
+    const diff = (px, py) => {
+      const xi = Math.round(px), yi = Math.round(py);
+      if (xi < 1 || yi < 1 || xi >= w - 1 || yi >= h - 1) return 0;
+      const j = (yi * w + xi) * 4;
+      // Outside the half-pixel range of the reference (left-over jitter at edges does not count).
+      let worst = 0;
+      for (let c = 0; c < 3; c++) {
+        const v = cur[j + c] - o[c], q0 = ref[j + c];
+        let lo = q0, hi = q0;
+        for (const q of [ref[j - 4 + c], ref[j + 4 + c], ref[j - w * 4 + c], ref[j + w * 4 + c]]) { const m = (q0 + q) * 0.5; if (m < lo) lo = m; if (m > hi) hi = m; }
+        const d = v < lo ? lo - v : v > hi ? v - hi : 0;
+        if (d > worst) worst = d;
+      }
+      return worst;
+    };
+    let bx = x, by = y, miss = 0;
+    for (let k = 1; k <= maxSteps; k++) {
+      const cx = x + dx * k, cy = y + dy * k;
+      let hit = null, best = thr;
+      for (const s of [0, -1, 1, -2, 2]) {
+        const px = cx - dy * s, py = cy + dx * s, d = diff(px, py);
+        if (d > best) { best = d; hit = [px, py]; }
+      }
+      if (hit) { bx = hit[0]; by = hit[1]; miss = 0; } else if (++miss > 3) break;
+    }
+    return [bx, by];
+  }
+
+  // ---------- Camera model (where darts point in the picture) ----------
+  /**
+   * From the calibration homography h (board mm → video normalised) and the video size, recover the
+   * camera: focal length from the orthogonality of the board axes (principal point = image centre),
+   * then the board normal. project(X, Y, Z) gives the picture position (normalised) of a point Z mm in
+   * front of the board – e.g. the flight end of a dart stuck in at (X, Y).
+   */
+  function dartModel(h, vw, vh) {
+    const row1 = [h[0] * vw - h[6] * vw / 2, h[1] * vw - h[7] * vw / 2, h[2] * vw - h[8] * vw / 2];
+    const row2 = [h[3] * vh - h[6] * vh / 2, h[4] * vh - h[7] * vh / 2, h[5] * vh - h[8] * vh / 2];
+    const row3 = [h[6], h[7], h[8]];
+    const sg = row3[2] < 0 ? -1 : 1; // board centre in front of the camera
+    const c1 = [row1[0] * sg, row2[0] * sg, row3[0] * sg], c2 = [row1[1] * sg, row2[1] * sg, row3[1] * sg], c3 = [row1[2] * sg, row2[2] * sg, row3[2] * sg];
+    const W = Math.max(vw, vh), ests = [];
+    const d1 = c1[2] * c2[2];
+    if (Math.abs(d1) > 1e-14) { const f2 = -(c1[0] * c2[0] + c1[1] * c2[1]) / d1; if (f2 > 0) ests.push(f2); }
+    const d2 = c2[2] * c2[2] - c1[2] * c1[2];
+    if (Math.abs(d2) > 1e-14) { const f2 = (c1[0] * c1[0] + c1[1] * c1[1] - c2[0] * c2[0] - c2[1] * c2[1]) / d2; if (f2 > 0) ests.push(f2); }
+    let f = ests.length ? Math.sqrt(ests.reduce((a, b) => a + b, 0) / ests.length) : 0;
+    const guessed = !(f > 0.35 * W && f < 5 * W);
+    if (guessed) f = 0.75 * W; // typical phone main camera
+    const a1 = [c1[0] / f, c1[1] / f, c1[2]], a2 = [c2[0] / f, c2[1] / f, c2[2]];
+    const n1 = Math.hypot(a1[0], a1[1], a1[2]), n2 = Math.hypot(a2[0], a2[1], a2[2]), lam = (n1 + n2) / 2;
+    const u1 = a1.map(v => v / n1), u2 = a2.map(v => v / n2);
+    const nr = [u1[1] * u2[2] - u1[2] * u2[1], u1[2] * u2[0] - u1[0] * u2[2], u1[0] * u2[1] - u1[1] * u2[0]];
+    const c3n = [nr[0] * f * lam, nr[1] * f * lam, nr[2] * lam];
+    const raw = (X, Y, Z) => {
+      const x = c1[0] * X + c2[0] * Y + c3n[0] * Z + c3[0];
+      const y = c1[1] * X + c2[1] * Y + c3n[1] * Z + c3[1];
+      const w = c1[2] * X + c2[2] * Y + c3n[2] * Z + c3[2];
+      return [x / w / vw + 0.5, y / w / vh + 0.5, w];
+    };
+    const toward = raw(0, 0, 50)[2] < raw(0, 0, 0)[2] ? 1 : -1; // the side whose points get closer to the camera
+    return { f, guessed, project: (X, Y, Z) => raw(X, Y, toward * Z) };
   }
 
   // ---------- Camera movement ----------
@@ -438,13 +585,16 @@
    */
   function makeTracker(anchorL, mask, w, h, range) {
     range = range || 36;
-    const pts = trackPoints(anchorL, mask, w, h, 2, 2);
+    let pts = trackPoints(anchorL, mask, w, h, w > 400 ? 3 : 2, 2);
+    if (pts.length > 4500) { const k = pts.length / 4500; pts = Array.from({ length: 4500 }, (_, i) => pts[Math.floor(i * k)]); }
     const f = 4, cw = Math.floor(w / f), ch = Math.floor(h / f);
     const cRef = downsample(anchorL, w, h, f);
     let cMask = null;
     if (mask) { cMask = new Uint8Array(cw * ch); for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) cMask[y * cw + x] = mask[(y * f + (f >> 1)) * w + x * f + (f >> 1)]; }
     const cPts = trackPoints(cRef, cMask, cw, ch, 1, 2);
-    const good = r => r.inl >= 0.75 && r.err <= 9, great = r => r.inl >= 0.86 && r.err <= 7;
+    // Residual error depends on noise and video compression: judge it against what this camera usually gives.
+    let base = 6;
+    const good = r => r.inl >= 0.8 && r.err <= Math.max(12, base * 2 + 3), great = r => r.inl >= 0.88 && r.err <= Math.max(8, base * 1.4 + 2);
     const better = (a, b) => !a || (b.inl - b.err * 0.02 > a.inl - a.err * 0.02) ? b : a;
     function coarse(curL, guess) {
       const cCur = downsample(curL, w, h, f), R = Math.ceil(range / f);
@@ -485,27 +635,55 @@
         let r = lkShift(anchorL, curL, w, h, pts, guess, 8);
         if (!great(r)) r = better(r, lkShift(anchorL, curL, w, h, pts, coarseLK(curL, guess), 10));
         if (!great(r)) { const c = coarse(curL, guess); if (c) r = better(r, lkShift(anchorL, curL, w, h, pts, c, 10)); }
+        if (r.inl >= 0.88) base = Math.min(20, Math.max(2, base * 0.9 + r.err * 0.1));
         return { dx: r.dx, dy: r.dy, ok: good(r), inl: r.inl, err: r.err };
       }
     };
   }
-  /** RGBA frame resampled so it lines up with the anchor: out(p) = px(p + (dx, dy)). */
+  /** RGBA frame resampled so it lines up with the anchor: out(p) = px(p + (dx, dy)). Fixed-point bilinear. */
   function warpShift(px, w, h, dx, dy) {
     const out = new Uint8ClampedArray(px.length);
-    const ix = Math.floor(dx), iy = Math.floor(dy), fx = dx - ix, fy = dy - iy;
-    const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+    const ix = Math.floor(dx), iy = Math.floor(dy);
+    const fx = Math.round((dx - ix) * 256), fy = Math.round((dy - iy) * 256);
+    const w00 = (256 - fx) * (256 - fy), w10 = fx * (256 - fy), w01 = (256 - fx) * fy, w11 = fx * fy;
+    const cx0 = new Int32Array(w), cx1 = new Int32Array(w);
+    for (let x = 0; x < w; x++) { cx0[x] = Math.min(w - 1, Math.max(0, x + ix)) * 4; cx1[x] = Math.min(w - 1, Math.max(0, x + ix + 1)) * 4; }
     for (let y = 0; y < h; y++) {
-      const y0 = Math.min(h - 1, Math.max(0, y + iy)), y1 = Math.min(h - 1, Math.max(0, y + iy + 1));
-      for (let x = 0; x < w; x++) {
-        const x0 = Math.min(w - 1, Math.max(0, x + ix)), x1 = Math.min(w - 1, Math.max(0, x + ix + 1));
-        const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c2 = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4, o = (y * w + x) * 4;
-        out[o] = px[a] * w00 + px[b] * w10 + px[c2] * w01 + px[d] * w11;
-        out[o + 1] = px[a + 1] * w00 + px[b + 1] * w10 + px[c2 + 1] * w01 + px[d + 1] * w11;
-        out[o + 2] = px[a + 2] * w00 + px[b + 2] * w10 + px[c2 + 2] * w01 + px[d + 2] * w11;
+      const r0 = Math.min(h - 1, Math.max(0, y + iy)) * w * 4, r1 = Math.min(h - 1, Math.max(0, y + iy + 1)) * w * 4;
+      let o = y * w * 4;
+      for (let x = 0; x < w; x++, o += 4) {
+        const a = r0 + cx0[x], b = r0 + cx1[x], c2 = r1 + cx0[x], d = r1 + cx1[x];
+        out[o] = (px[a] * w00 + px[b] * w10 + px[c2] * w01 + px[d] * w11) >> 16;
+        out[o + 1] = (px[a + 1] * w00 + px[b + 1] * w10 + px[c2 + 1] * w01 + px[d + 1] * w11) >> 16;
+        out[o + 2] = (px[a + 2] * w00 + px[b + 2] * w10 + px[c2 + 2] * w01 + px[d + 2] * w11) >> 16;
         out[o + 3] = 255;
       }
     }
     return out;
+  }
+  /**
+   * Quick movement check between two aligned frames on every 2nd row and column:
+   * estimated number of pixels that changed clearly (beyond the half-pixel range of b).
+   */
+  function motionCount(a, b, mask, w, h, thr, off, border) {
+    const o = off || [0, 0, 0], m = Math.max(1, border | 0);
+    let count = 0;
+    for (let y = m; y < h - m; y += 2) for (let x = m; x < w - m; x += 2) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      const j = i * 4;
+      if (Math.abs(a[j] - o[0] - b[j]) <= thr && Math.abs(a[j + 1] - o[1] - b[j + 1]) <= thr && Math.abs(a[j + 2] - o[2] - b[j + 2]) <= thr) continue;
+      let worst = 0;
+      for (let c = 0; c < 3; c++) {
+        const v = a[j + c] - o[c], q0 = b[j + c];
+        let lo = q0, hi = q0;
+        for (const q of [b[j - 4 + c], b[j + 4 + c], b[j - w * 4 + c], b[j + w * 4 + c]]) { const mq = (q0 + q) * 0.5; if (mq < lo) lo = mq; if (mq > hi) hi = mq; }
+        const d = v < lo ? lo - v : v > hi ? v - hi : 0;
+        if (d > worst) worst = d;
+      }
+      if (worst > thr) count++;
+    }
+    return count * 4;
   }
   /**
    * Like diffMask, but a pixel only counts as changed if its colour lies outside the range b takes
@@ -832,7 +1010,7 @@
 
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
-    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, motionCount, dartModel, traceTip, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

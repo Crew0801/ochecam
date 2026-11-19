@@ -302,7 +302,13 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
     <div class="field"><span class="label">Empfindlichkeit <span id="sensVal"></span></span><input type="range" id="sens" min="1" max="100"></div>
     <div class="field"><span class="label">Dartspitze im Bild</span>
       <select id="tipPref"><option value="auto">Automatisch (schmales Ende)</option><option value="up">Spitze zeigt nach oben</option><option value="down">Spitze zeigt nach unten</option></select></div>
+    <div class="field"><span class="label">Lernende Erkennung</span>
+      <p class="hint">Tippst du einen Dart ein, den die Kamera übersehen hat, oder korrigierst einen Phantom-Dart auf „Miss“, passt sich die Erkennung an dein Board, Licht und deine Darts an.</p>
+      <p class="hint" id="learnInfo"></p>
+      <button class="secondary" id="learnReset" type="button">Gelerntes zurücksetzen</button>
+    </div>
     <label class="switch"><span>Stimme (sagt jeden Dart und die Summe)</span><input type="checkbox" id="voice"></label>
+    <label class="switch"><span>Sprüche (Lob bei T20/T19, Lästern bei 1, 5 und daneben)</span><input type="checkbox" id="banter"></label>
     <div class="field"><span class="label">Stimme auswählen</span>
       <div class="voicerow"><select id="voiceSel"></select><button class="secondary" id="voiceTest" type="button">Anhören</button></div>
       <label class="zoomrow" for="voiceRate"><span>Tempo</span><input type="range" id="voiceRate" min="0.8" max="1.3" step="0.05" value="1"></label>

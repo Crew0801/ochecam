@@ -29,3 +29,14 @@ Differenzbild gegenüber einem Referenzbild des Boards → größter veränderte
 ## Dateien
 
 `index.html` Oberfläche · `app.js` Spielablauf, Kamera, Kalibrierung · `core.js` Board-Geometrie, Checkouts, Bildanalyse · `serve.py` lokaler HTTPS-Server · `sw.js`/`manifest.webmanifest` PWA
+
+## Erkennung – wie sie arbeitet
+- **Board-Ausschnitt in voller Auflösung:** Analysiert wird nur der Bereich ums Board, immer gleich fein – auch wenn das Handy weit weg steht und nicht gezoomt ist.
+- **Kameramodell:** Aus den 4 Kalibrierpunkten berechnet die App Brennweite und Blickwinkel. Damit weiß sie für jede Stelle, in welche Richtung und wie lang ein steckender Dart im Bild aussehen muss – das bestimmt, welches Ende die Spitze ist, fügt zerfallene Dart-Teile zusammen und lässt frontal gesehene (kurze) Darts zu.
+- **Spitzen-Suche:** Von Flight und Schaft aus folgt die App der Dart-Achse mit feinerer Schwelle bis zur Spitze (z. B. silberner Barrel auf hellem Feld).
+- **Live-Vorschau:** Gelber Ring „T20?“, sobald ein Dart steckt; nach ca. 0,5 s bestätigt.
+- **Lernt aus Korrekturen:** Von Hand eingetippte, übersehene Darts machen die Erkennung empfindlicher bzw. lassen solche Formen zu; auf „Miss“ korrigierte Phantom-Darts machen sie strenger. Zurücksetzen in den Einstellungen.
+- **Bildstabilisierung:** Wackeln und Verrutschen des Handys werden bei jedem Bild ausgeglichen.
+
+## Sprüche
+Lob bei Triple 20 und Triple 19, Lästern bei 1, 5 und daneben – aber nur, solange kein Finish möglich ist. Abschaltbar in den Einstellungen.
