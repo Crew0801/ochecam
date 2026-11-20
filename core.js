@@ -1042,9 +1042,27 @@
     { id: 'world', name: 'Weltklasse', avg: 100, sigma: 6.5 }
   ];
 
+  // ---------- Two cameras ----------
+  /**
+   * Each camera sees the dart on a line across the board: its view ray through the dart, laid onto the board plane.
+   * The tip lies on both lines, so where they cross is the tip. Along its own line one camera is unsure (hidden tip,
+   * shadow, tilted dart); across it, it is precise. a, b: {p:[x,y] tip estimate mm, d:[dx,dy] unit direction, w: weight}.
+   */
+  function fuseTips(a, b) {
+    const wa = a.w || 0.5, wb = b.w || 0.5;
+    const mid = [(a.p[0] * wa + b.p[0] * wb) / (wa + wb), (a.p[1] * wa + b.p[1] * wb) / (wa + wb)];
+    if (!a.d || !b.d) return { p: mid, how: 'avg' };
+    const cr = a.d[0] * b.d[1] - a.d[1] * b.d[0];
+    if (Math.abs(cr) < 0.34) return { p: mid, how: 'avg' }; // lines nearly parallel: cameras look from the same side
+    const dx = b.p[0] - a.p[0], dy = b.p[1] - a.p[1];
+    const s = (dx * b.d[1] - dy * b.d[0]) / cr, t = (dx * a.d[1] - dy * a.d[0]) / cr;
+    if (Math.abs(s) > 30 || Math.abs(t) > 30) return { p: mid, how: 'avg' }; // crossing far off: one line is wrong
+    return { p: [a.p[0] + s * a.d[0], a.p[1] + s * a.d[1]], how: 'tri' };
+  }
+
   const api = {
     SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, checkouts, isFinish,
-    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, motionCount, dartModel, traceTip, aimPoint, botTarget, botThrow, BOT_LEVELS
+    meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, motionCount, dartModel, traceTip, aimPoint, botTarget, botThrow, BOT_LEVELS, fuseTips
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Core = api;

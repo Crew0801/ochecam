@@ -6,10 +6,15 @@
   const $$ = s => Array.from(document.querySelectorAll(s));
 
   // ---------------- Storage ----------------
+  const QS = new URLSearchParams(location.search);
+  const KEY = 'ochecam.' + ((QS.get('ns') || '').replace(/\W/g, '') ? QS.get('ns').replace(/\W/g, '') + '.' : '');
   const store = {
-    get(k, d) { try { const v = localStorage.getItem('ochecam.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
-    set(k, v) { try { localStorage.setItem('ochecam.' + k, JSON.stringify(v)); } catch {} }
+    get(k, d) { try { const v = localStorage.getItem(KEY + k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(KEY + k, JSON.stringify(v)); } catch {} }
   };
+  // ?join=CODE: this phone is the second camera of another phone (main). It only detects and reports darts.
+  const JOIN = (QS.get('join') || '').replace(/\D/g, '').slice(0, 6);
+  const SAT = JOIN.length === 6;
 
   const settings = Object.assign({
     players: ['Spieler 1', 'Spieler 2'], start: 501, out: 'double', legs: 2,
@@ -282,7 +287,7 @@
     undoStack = [];
     persist();
   }
-  const persist = () => store.set('game', G);
+  const persist = () => { if (!SAT) store.set('game', G); };
   const snapshot = () => { undoStack.push(JSON.stringify(G)); if (undoStack.length > 200) undoStack.shift(); };
 
   /** Evaluate the current visit: remaining, bust, win, done. */
@@ -306,6 +311,7 @@
 
   function addDart(d, meta) {
     if (!G || G.over) return;
+    if (SAT) { satReport(d, meta || {}); return; }
     if (G.bull) { bullThrow(d, meta || {}); return; }
     const st = visitState();
     if (st.done) { toast('Aufnahme ist voll – „Weiter“ drücken'); return; }
@@ -325,8 +331,10 @@
   }
 
   // ---------------- Bull-off: who starts ----------------
-  const dartsLeft = () => G.bull ? 1 : 3 - G.visit.length;
-  const boardClear = () => G.visit.length === 0 && !(G.bull && G.bull.spots.length); // no counted dart in the board
+  const dartsLeft = () => (G.bull ? 1 : 3 - G.visit.length) - fusion.pendN();
+  const boardClear = () => G.visit.length === 0 && !(G.bull && G.bull.spots.length) && !fusion.pendN(); // no counted dart in the board
+  // Where this visit's darts sit in the picture (video coords), including darts still waiting for the 2nd camera.
+  const visitImgs = () => G.visit.filter(d => d.img).map(d => d.img).concat(fusion.pendImgs());
   function bullText(r) { return r.bull ? 'Bull' : r.manual ? r.label : r.dist > 170 ? 'daneben' : Math.round(r.dist) + ' mm'; }
   function bullSpoken(r) { return r.bull ? 'Bull!' : r.manual ? spokenDart(r) : r.dist > 170 ? 'daneben' : Math.round(r.dist / 10) < 1 ? Math.round(r.dist) + ' Millimeter' : (r.dist / 10).toFixed(1).replace('.', ',') + ' Zentimeter'; }
   function bullThrow(d, meta) {
@@ -410,7 +418,9 @@
 
   /** Darts were pulled although fewer than three were counted: the others went out (or were not seen). */
   function finishVisitEarly() {
-    if (!G || G.over || visitState().done) return;
+    if (SAT || !G || G.over || visitState().done) return;
+    fusion.flushAll();
+    if (visitState().done) return;
     const k = 3 - G.visit.length;
     snapshot();
     for (let i = 0; i < k; i++) G.visit.push(Object.assign(C.dart(0, 0), { auto: true, filled: true }));
@@ -423,7 +433,8 @@
 
   /** Commit current visit and go to next player (or next leg / end of match). */
   function nextTurn() {
-    if (!G || G.over) return;
+    if (SAT || !G || G.over) return;
+    fusion.flushAll();
     snapshot();
     const st = visitState();
     const p = G.players[G.cur];
@@ -504,6 +515,7 @@
   const isBotTurn = () => !!(G && !G.over && G.players[G.cur].bot);
   function scheduleBot() {
     clearTimeout(botTimer);
+    if (SAT) return;
     if (!isBotTurn() || $('#game').hidden || !$('#modal').hidden) return;
     if (G.bull) {
       botTimer = setTimeout(() => {
@@ -529,7 +541,8 @@
   // ---------------- Rendering ----------------
   const avg = (pts, darts) => darts ? (pts / darts * 3).toFixed(1) : '–';
   function render() {
-    if (!G) return;
+    linkUi();
+    if (!G) { if (SAT) { const co = $('#checkout'); co.className = 'checkout none'; co.textContent = 'Warte auf Spielstart am Hauptgerät …'; $('#strip').innerHTML = ''; $('#visit').innerHTML = ''; drawOverlay(); } return; }
     const st = visitState();
     // Players
     const strip = $('#strip'); strip.innerHTML = '';
@@ -661,7 +674,7 @@
     });
   }
   function openPad(i) {
-    if (!G || G.over) return;
+    if (SAT || !G || G.over) return;
     if (isBotTurn()) { toast('Der Bot ist am Zug'); return; }
     const st = visitState();
     if (i >= G.visit.length && st.done) { toast('Aufnahme ist voll – „Weiter“ drücken'); return; }
@@ -696,7 +709,10 @@
     if (dartsInBoard) detector.waitForPull();
     nextTurn(); detector.rearm(dartsInBoard, false);
   };
-  $('#btnMenu').onclick = () => showSetup();
+  $('#btnMenu').onclick = () => {
+    if (SAT) { if (confirm('Zweitkamera beenden?')) { const q = new URLSearchParams(location.search); q.delete('join'); location.href = location.pathname + (q.toString() ? '?' + q : ''); } return; }
+    showSetup();
+  };
 
   // ---------------- Camera ----------------
   const video = $('#video'), overlay = $('#overlay'), stage = $('#stage');
@@ -986,10 +1002,13 @@
       reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; emptyRef = null; pulling = G ? visitState().done : false; },
       waitForPull(spots) {
         pulling = true;
-        pullSpots = spots ? spots.map(p => p.slice()) : G ? G.visit.filter(d => d.img).map(d => d.img.slice()) : [];
+        pullSpots = spots ? spots.map(p => p.slice()) : G ? visitImgs().map(p => p.slice()) : [];
         if (stream) setStatus('pull', 'Darts ziehen');
       },
       get pulling() { return pulling; },
+      get pullSpots() { return pullSpots; },
+      /** The other camera counted a dart this one did not see: take the current picture as the new reference. */
+      absorb() { absorbNext = true; },
       rearm(done, newRef) { pulling = !!done; stable = 0; if (newRef) ref = null; if (stream && !calibrating && !isBotTurn()) pulling ? setStatus('pull', 'Darts ziehen') : setStatus('ready', 'Bereit – wirf!'); },
       debugCanvas() {
         if (!dbgCanvas) { dbgCanvas = document.createElement('canvas'); }
@@ -1215,10 +1234,10 @@
     let armed = false, paused = false, cand = null, personSeen = false;
     // bursts: separate throw movements (movement after a calm moment) since the last decision. One throw
     // brings one dart, so a single movement can never add two darts (shadow, flight and tip seen apart).
-    let bursts = 0;
+    let bursts = 0, absorbNext = false;
     /** Are the darts of the current visit gone from where they were counted? */
     function visitPulled(cur, P) {
-      const spots = G.visit.filter(d => d.img).map(d => d.img.slice());
+      const spots = visitImgs().map(p => p.slice());
       if (!spots.length) return false;
       const keep = pullSpots; pullSpots = spots;
       const gone = dartsGone(cur, P);
@@ -1301,6 +1320,7 @@
         return;
       }
 
+      if (absorbNext) { absorbNext = false; ref = copy(cur); cand = null; armed = false; bursts = 0; personSeen = false; self.preview = []; return; }
       // Someone was at the board and the darts counted so far are gone again: they pulled before three
       // darts were counted, so the rest went out. Finish the visit instead of giving the next throw to them.
       if (personSeen && emptyRef && G.visit.length && !visitState().done && visitPulled(cur, P)) {
@@ -1380,12 +1400,12 @@
       const rejected = hits.rejected;
       // One throw = one dart. A second find in the same check only counts when it is a clear, separate dart
       // (two quick throws); bits next to a dart already in the board are that dart being nudged.
-      const old = G.visit.filter(d => d.img).map(d => v2p(d.img[0], d.img[1]));
+      const old = visitImgs().map(p => v2p(p[0], p[1]));
       const near = (h, list, r) => list.some(([x, y]) => Math.hypot(h.x - x, h.y - y) < r);
       const radius = h => Math.max(6, (h.exp ? h.exp.len : PW / 20) * 0.7);
       // Distances on the board in mm (independent of how the camera looks at it).
       const mm = h => { const [vx, vy] = p2v(h.x, h.y); return C.applyH(H, vx, vy); };
-      const oldMm = G.visit.filter(d => d.img).map(d => C.applyH(H, d.img[0], d.img[1]));
+      const oldMm = visitImgs().map(p => C.applyH(H, p[0], p[1]));
       const nearMm = (h, list, r) => { const [x, y] = mm(h); return list.some(([a, b]) => Math.hypot(x - a, y - b) < r); };
       const throws = Math.max(1, bursts);
       const kept = [];
@@ -1436,7 +1456,14 @@
         const [bx, by] = C.applyH(H, nx, ny);
         const d = C.scoreAt(bx, by);
         labels.push(d.label);
-        addDart(d, { auto: true, img: [nx, ny], conf: +hit.conf.toFixed(2) });
+        // The dart's line on the board (for a second camera): from the tip along the dart, as seen from here.
+        let lx = hit.axis ? hit.axis.cx + 0.5 - hit.x : 0, ly = hit.axis ? hit.axis.cy + 0.5 - hit.y : 0, ll = Math.hypot(lx, ly), line = null;
+        if (ll < 3 && hit.exp) { lx = hit.exp.ex; ly = hit.exp.ey; ll = 1; }
+        if (ll > 0) {
+          const [qx, qy] = p2v(hit.x + lx / ll * 15, hit.y + ly / ll * 15), [ex, ey] = C.applyH(H, qx, qy), dl = Math.hypot(ex - bx, ey - by);
+          if (dl > 1e-6) line = { d: [+((ex - bx) / dl).toFixed(4), +((ey - by) / dl).toFixed(4)] };
+        }
+        fusion.main(d, { auto: true, img: [nx, ny], conf: +hit.conf.toFixed(2), bp: [+bx.toFixed(1), +by.toFixed(1)], line, clear: !hit.unsure && hit.conf >= 0.5 });
       }
       if (!visitState().done) setStatus('hit', (hits.length > 1 ? hits.length + ' Darts: ' : 'Erkannt: ') + labels.join(', ') + (hits.some(hh => hh.unsure) ? ' – bitte prüfen' : ''));
     }
@@ -1452,6 +1479,255 @@
     })(0);
     return self;
   })();
+
+  // ---------------- Second camera: triangulation ----------------
+  // Both phones detect darts on their own. The second one sends each dart's tip and its line on the board; here the
+  // two lines are crossed (Core.fuseTips). A dart only one camera saw (the other one's view was blocked) still counts.
+  const fusion = (() => {
+    const WAIT_MAIN = 900;   // ms this camera's dart waits for the other camera's report
+    const WAIT_SAT = 1300;   // ms a dart only the other camera saw waits for this camera
+    const MATCH = 60;        // mm: two reports of one dart
+    let pend = [], obs = [];
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const toImg = bp => Hinv ? C.applyH(Hinv, bp[0], bp[1]) : null;
+    /** Cross the two lines; a: this camera {bp,line,conf}, b: the other one. */
+    function combine(a, b) {
+      const r = C.fuseTips({ p: a.bp, d: a.line && a.line.d, w: a.conf || 0.5 }, { p: b.bp, d: b.line && b.line.d, w: b.conf || 0.5 });
+      const bp = [+r.p[0].toFixed(1), +r.p[1].toFixed(1)];
+      return { d: C.scoreAt(bp[0], bp[1]), bp, how: r.how };
+    }
+    function commit(meta, o) {
+      const f = combine(meta, o);
+      self.fused = (self.fused || 0) + 1;
+      addDart(f.d, Object.assign({}, meta, { bp: f.bp, img: toImg(f.bp) || meta.img, two: f.how, conf: Math.max(meta.conf || 0, o.conf || 0),
+        cams: [meta.bp, o.bp], other: { bp: o.bp, line: o.line, conf: o.conf } }));
+    }
+    /** A counted dart gets the other camera's view later: move it, and say so if the field changes. */
+    function refine(i, a, b) {
+      const v = G.visit[i], f = combine(a, b);
+      const upd = { bp: f.bp, img: toImg(f.bp) || v.img, two: f.how, cams: [a.bp, b.bp] };
+      if (f.d.label !== v.label) {
+        snapshot();
+        G.visit[i] = Object.assign({}, v, f.d, upd);
+        toast('2. Kamera: ' + v.label + ' → ' + f.d.label, 3200);
+        say('Korrektur: ' + spokenDart(f.d) + '.');
+        afterChange(false);
+      } else { Object.assign(v, upd); persist(); drawOverlay(); }
+    }
+    function flush(e) {
+      const k = pend.indexOf(e); if (k < 0) return;
+      clearTimeout(e.timer); pend.splice(k, 1);
+      addDart(e.d, e.meta);
+    }
+    function satOnly(o) {
+      if (o.used) return; o.used = true;
+      if (!linkReady() || !G || G.over || isBotTurn() || !o.clear) return;
+      if (!G.bull && visitState().done) return;
+      if (G.visit.some(v => v.bp && dist(v.bp, o.bp) < 12)) return; // that dart is counted already
+      self.satOnly = (self.satOnly || 0) + 1;
+      detector.absorb(); // this camera did not see it: do not count it later as a new dart
+      addDart(C.scoreAt(o.bp[0], o.bp[1]), { auto: true, sat: true, at: Date.now(), bp: o.bp, img: toImg(o.bp), conf: o.conf, other: { bp: o.bp, line: o.line, conf: o.conf } });
+    }
+    const self = {
+      pendN: () => pend.length,
+      pendImgs: () => pend.map(e => e.meta.img),
+      flushAll() { pend.slice().forEach(flush); },
+      /** A dart seen by this phone's camera. */
+      main(d, meta) {
+        const now = Date.now(); meta.at = now;
+        if (!linkReady() || !G) { addDart(d, meta); return; }
+        obs = obs.filter(o => now - o.at < 6000);
+        const o = obs.filter(o => !o.used && now - o.at < 2500 && dist(o.bp, meta.bp) < MATCH).sort((x, y) => dist(x.bp, meta.bp) - dist(y.bp, meta.bp))[0];
+        if (o) { o.used = true; clearTimeout(o.timer); commit(meta, o); return; }
+        // Only the other camera had seen it and it is counted already: this view makes it more exact.
+        const i = G.visit.findIndex(v => v.sat && !v.two && now - v.at < 4500 && v.bp && dist(v.bp, meta.bp) < MATCH);
+        if (i >= 0) { refine(i, meta, G.visit[i].other); return; }
+        const e = { d, meta }; e.timer = setTimeout(() => flush(e), WAIT_MAIN); pend.push(e);
+      },
+      /** A dart reported by the second camera. */
+      sat(m) {
+        const now = Date.now();
+        const o = { bp: m.bp, line: m.line && Array.isArray(m.line.d) ? { d: m.line.d } : null, conf: +m.conf || 0.5, clear: !!m.clear, at: now, used: false };
+        obs = obs.filter(x => now - x.at < 6000); obs.push(o);
+        self.lastSat = o;
+        if (!G || G.over || isBotTurn()) { o.used = true; return; }
+        const e = pend.filter(e => dist(e.meta.bp, o.bp) < MATCH).sort((x, y) => dist(x.meta.bp, o.bp) - dist(y.meta.bp, o.bp))[0];
+        if (e) { o.used = true; clearTimeout(e.timer); pend.splice(pend.indexOf(e), 1); commit(e.meta, o); return; }
+        const i = G.visit.findIndex(v => v.auto && !v.manual && !v.sat && !v.two && v.bp && v.at && now - v.at < 3000 && dist(v.bp, o.bp) < MATCH);
+        if (i >= 0) { o.used = true; refine(i, G.visit[i], o); return; }
+        o.timer = setTimeout(() => satOnly(o), WAIT_SAT);
+      }
+    };
+    return self;
+  })();
+
+  // ---------------- Second camera: connection ----------------
+  const L2 = window.OcheLink;
+  const link = { api: null, conn: null, up: false, peer: null, err: null, code: SAT ? JOIN : settings.linkCode || null, thumbAt: 0 };
+  /** The second camera is connected, calibrated and filming. */
+  const linkReady = () => !SAT && link.up && !!link.peer && link.peer.cal && link.peer.cam;
+  const finite = v => typeof v === 'number' && isFinite(v);
+  const pt = a => Array.isArray(a) && a.length === 2 && a.every(finite);
+  const ERRS = {
+    lib: 'Verbindungsdienst nicht erreichbar – Internet?', 'peer-unavailable': 'Hauptgerät nicht gefunden – Code prüfen, ist OcheCam dort offen?',
+    'unavailable-id': 'Code noch belegt – neuer Versuch …', timeout: 'Verbindung klappt nicht – beide Handys im selben WLAN?',
+    network: 'Keine Verbindung zum Verbindungsdienst – neuer Versuch …', 'browser-incompatible': 'Dieser Browser kann keine Direktverbindung (WebRTC).'
+  };
+  const errText = () => link.err ? (ERRS[link.err] || 'Verbindungsfehler – neuer Versuch …') : '';
+
+  function linkUi() {
+    const bar = $('#linkBar');
+    let txt = '', k = '';
+    if (SAT) {
+      k = link.up ? (calib ? 'ok' : 'warn') : 'wait';
+      txt = link.up ? 'Zweitkamera · verbunden mit dem Hauptgerät' + (calib ? '' : ' – bitte kalibrieren') : `Zweitkamera · verbinde mit Code ${JOIN} … ${errText()}`;
+    } else if (link.api) {
+      const p = link.peer;
+      if (linkReady()) { k = 'ok'; txt = '2 Kameras aktiv – Treffer werden aus beiden Ansichten berechnet'; }
+      else if (link.up) { k = 'warn'; txt = !p ? '2. Kamera verbunden …' : !p.cam ? '2. Kamera verbunden – dort Kamera starten' : '2. Kamera verbunden – dort noch kalibrieren'; }
+      else { k = 'wait'; txt = `2. Kamera: warte auf Verbindung · Code ${link.code} ${errText()}`; }
+    }
+    if (bar) { bar.hidden = !txt; bar.dataset.k = k; bar.textContent = txt; }
+    const st = $('#lnkState'); if (st) st.textContent = txt || 'Nicht verbunden';
+    const hint = $('#linkHint'); if (hint) hint.textContent = SAT ? '' : txt;
+    const pip = $('#pip'); if (pip && (!link.up || SAT)) pip.hidden = true;
+  }
+
+  // ----- main phone -----
+  function hostStart() {
+    if (SAT || link.api || !L2) return;
+    if (!settings.linkCode) settings.linkCode = L2.newCode();
+    settings.linkOn = true; saveSettings();
+    link.code = settings.linkCode; link.err = null;
+    link.api = L2.host(link.code, {
+      onReady() { linkUi(); },
+      onOpen(c) { link.conn = c; link.up = true; link.peer = null; lastState = ''; linkUi(); toast('Zweite Kamera verbunden', 2500); },
+      onData(m) {
+        if (!m || typeof m !== 'object') return;
+        if (m.t === 'st') { link.peer = { cal: !!m.cal, cam: !!m.cam }; linkUi(); }
+        else if (m.t === 'img' && typeof m.src === 'string' && m.src.startsWith('data:image/jpeg') && m.src.length < 400000) {
+          const pip = $('#pip'); pip.src = m.src; link.thumbAt = Date.now(); pip.hidden = calibrating || !stream;
+        }
+        else if (m.t === 'dart' && pt(m.bp) && Math.hypot(m.bp[0], m.bp[1]) < 400 && (!m.line || pt(m.line.d))) fusion.sat(m);
+      },
+      onClose() { link.conn = null; link.up = false; link.peer = null; fusion.flushAll(); linkUi(); toast('Zweite Kamera getrennt', 2500); },
+      onError(e) { link.err = e; linkUi(); }
+    });
+    linkUi();
+  }
+  function hostStop() {
+    if (link.api) link.api.close();
+    Object.assign(link, { api: null, conn: null, up: false, peer: null, err: null });
+    settings.linkOn = false; saveSettings(); fusion.flushAll(); linkUi();
+  }
+  // Game state for the second phone (it needs to know the visit and where the darts are, in board mm).
+  let lastState = '', lastStateAt = 0;
+  function stateMsg() {
+    if (!G) return { t: 'g', g: null };
+    const bpOf = d => d.bot ? null : d.bp || (d.img && H ? C.applyH(H, d.img[0], d.img[1]).map(v => +v.toFixed(1)) : null);
+    const g = Object.assign({}, G, {
+      visit: G.visit.map(d => ({ n: d.n, m: d.m, v: d.v, label: d.label, bot: !!d.bot, auto: !!d.auto, manual: !!d.manual, conf: d.conf, two: d.two, bp: bpOf(d) })),
+      bull: G.bull ? Object.assign({}, G.bull, { spots: G.bull.spots.map(p => bpOf({ img: p })).filter(Boolean) }) : null
+    });
+    return { t: 'g', g, pull: detector.pulling, pullBp: detector.pullSpots.map(p => bpOf({ img: p })).filter(Boolean) };
+  }
+
+  function linkModal() {
+    hostStart();
+    const url = location.origin + location.pathname + '?join=' + link.code;
+    $('#modalCard').innerHTML = `<span class="label">Zweite Kamera</span><h2>Code <span class="num">${link.code}</span></h2>
+      <div class="qr" id="lnkQr"></div>
+      <p class="hint">Am zweiten Handy diesen QR-Code scannen – oder OcheCam öffnen, „Als Zweitkamera nutzen“ tippen und den Code eingeben. Dort einmal kalibrieren.</p>
+      <p class="hint lnkstate" id="lnkState"></p>
+      <p class="hint">Aufstellen: das zweite Handy auf der anderen Seite des Boards, gut 60–90° zum ersten versetzt (z. B. eins links, eins rechts). Beide im selben WLAN; Internet braucht es nur zum Finden.</p>
+      <button class="primary" id="lnkOk">Fertig</button><button class="secondary" id="lnkOff">Zweite Kamera trennen</button>`;
+    $('#modal').hidden = false; linkUi();
+    $('#lnkOk').onclick = closeModal;
+    $('#lnkOff').onclick = () => { hostStop(); closeModal(); toast('Zweite Kamera getrennt'); };
+    L2.loadQr().then(() => {
+      const q = window.qrcode(0, 'M'); q.addData(url); q.make();
+      const box = $('#lnkQr'); if (box) box.innerHTML = q.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+    }).catch(() => { const box = $('#lnkQr'); if (box) box.textContent = url; });
+  }
+  function joinModal() {
+    $('#modalCard').innerHTML = `<span class="label">Als Zweitkamera</span><h2>Code eingeben</h2>
+      <input class="codein num" id="lnkCode" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" value="${String(settings.lastJoin || '').replace(/\D/g, '')}">
+      <p class="hint">Den Code zeigt das Hauptgerät unter „Zweites Handy verbinden“. Dieses Handy zählt dann nicht selbst, es schaut nur aus einem zweiten Winkel aufs Board.</p>
+      <button class="primary" id="lnkGo">Verbinden</button><button class="secondary" id="lnkCancel">Abbrechen</button>`;
+    $('#modal').hidden = false;
+    const inp = $('#lnkCode'); setTimeout(() => inp.focus(), 50);
+    const go = () => {
+      const c = inp.value.replace(/\D/g, '');
+      if (c.length !== 6) { toast('Der Code hat 6 Ziffern'); return; }
+      settings.lastJoin = c; saveSettings();
+      const q = new URLSearchParams(location.search); q.set('join', c); location.href = location.pathname + '?' + q;
+    };
+    $('#lnkGo').onclick = go; inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    $('#lnkCancel').onclick = closeModal;
+  }
+  $('#linkHost').onclick = linkModal;
+  $('#linkJoin').onclick = joinModal;
+  $('#linkSet').onclick = () => { $('#setSheet').hidden = true; linkModal(); };
+  $('#pip').onclick = () => $('#pip').classList.toggle('big');
+
+  // ----- second phone -----
+  let mainPull = false;
+  function satReport(d, meta) {
+    if (!link.conn || !G) return;
+    link.conn.send({ t: 'dart', bp: meta.bp, line: meta.line, conf: meta.conf, clear: !!meta.clear });
+    // Count it here at once, so this camera does not report it twice; the main phone's state follows.
+    if (!G.bull) G.visit.push(Object.assign({}, d, meta)); else if (meta.img) G.bull.spots.push(meta.img);
+    render();
+  }
+  function onMainState(m) {
+    const toImg = bp => pt(bp) && Hinv ? C.applyH(Hinv, bp[0], bp[1]) : null;
+    if (!m.g || !Array.isArray(m.g.players) || !Array.isArray(m.g.visit)) { G = null; render(); return; }
+    const g = m.g;
+    g.visit.forEach(d => { const img = toImg(d.bp); if (img) d.img = img; });
+    if (g.bull) g.bull.spots = (g.bull.spots || []).map(toImg).filter(Boolean);
+    const fresh = !G;
+    G = g;
+    if (fresh) detector.reset();
+    if (m.pull && !mainPull) detector.waitForPull((m.pullBp || []).map(toImg).filter(Boolean));
+    else if (!m.pull && mainPull && detector.pulling) detector.rearm(false);
+    mainPull = !!m.pull;
+    render();
+  }
+  function bootSat() {
+    document.body.classList.add('sat'); $('#linkSet').hidden = true;
+    $('#setup').hidden = true; $('#game').hidden = false; $('#legInfo').textContent = 'Zweitkamera';
+    requestAnimationFrame(fitStage);
+    link.api = L2.join(JOIN, {
+      onOpen(c) { link.conn = c; link.up = true; link.err = null; linkUi(); toast('Mit dem Hauptgerät verbunden', 2500); },
+      onData(m) { if (m && m.t === 'g') onMainState(m); },
+      onClose() { link.conn = null; link.up = false; linkUi(); },
+      onError(e) { link.err = e; linkUi(); }
+    });
+    render();
+    if (navigator.mediaDevices && window.isSecureContext) startCamera();
+  }
+  const thumbCv = document.createElement('canvas');
+  function sendThumb() {
+    if (!link.conn || !stream || !video.videoWidth || calibrating) return;
+    const c = crop(), vw = video.videoWidth, vh = video.videoHeight, W = 360, Hh = Math.round(W * vh / vw);
+    thumbCv.width = W; thumbCv.height = Hh;
+    const x = thumbCv.getContext('2d');
+    x.drawImage(video, c.x0 * vw, c.y0 * vh, c.w * vw, c.w * vh, 0, 0, W, Hh);
+    for (const d of (G && G.visit) || []) {
+      if (!d.img) continue;
+      const [u, v] = v2d(d.img[0] + camShift[0], d.img[1] + camShift[1]);
+      x.beginPath(); x.arc(u * W, v * Hh, 5, 0, Math.PI * 2); x.fillStyle = '#ff3d81'; x.fill(); x.lineWidth = 2; x.strokeStyle = '#000'; x.stroke();
+    }
+    link.conn.send({ t: 'img', src: thumbCv.toDataURL('image/jpeg', 0.6) });
+  }
+  setInterval(() => {
+    if (!link.conn) return;
+    if (SAT) { link.conn.send({ t: 'st', cal: !!calib && !calibrating, cam: !!stream }); return; }
+    const m = stateMsg(), s = JSON.stringify(m), now = Date.now();
+    if (s !== lastState || now - lastStateAt > 2500) { link.conn.send(m); lastState = s; lastStateAt = now; }
+    if (now - link.thumbAt > 5000) $('#pip').hidden = true;
+  }, 300);
+  setInterval(() => { if (SAT) sendThumb(); }, 1000);
 
   // ---------------- Settings sheet ----------------
   $('#btnSettings').onclick = () => {
@@ -1500,11 +1776,12 @@
 
   // Boot
   buildBoardSvg($('#padBoard'));
-  G = store.get('game', null);
-  showSetup();
+  G = SAT ? null : store.get('game', null);
+  if (SAT) bootSat();
+  else { showSetup(); if (settings.linkOn) hostStart(); }
   if (!window.isSecureContext) toast('Hinweis: Für die Kamera muss die App über https:// laufen.', 5000);
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Expose for testing
-  window.OcheCam = { addDart: (n, m) => addDart(C.dart(n, m), { manual: true }), nextTurn, get game() { return G; }, visitState, detInfo: () => detector.info, det: () => detector };
+  window.OcheCam = { addDart: (n, m) => addDart(C.dart(n, m), { manual: true }), nextTurn, get game() { return G; }, visitState, detInfo: () => detector.info, det: () => detector, link, fusion };
 })();

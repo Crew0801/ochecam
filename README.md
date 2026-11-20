@@ -46,5 +46,13 @@ Differenzbild gegenüber einem Referenzbild des Boards → größter veränderte
 - **Ausbullen:** Beim Start wirft jeder einen Dart auf Bull, der nächste beginnt. Die Kamera misst den Abstand in Millimetern; zwei Bulls oder gleiches Ergebnis = Stechen. Bots werfen mit. Abschaltbar unter „Wer beginnt“, „Überspringen“ lässt Spieler 1 beginnen.
 - **Nachkalibrieren:** Ist das Board leer und ruhig, sucht die App etwa alle 20 s das Board neu und führt die Kalibrierung nach, wenn sie sich zweimal gleich verschoben hat (Feinkorrekturen von Hand bleiben erhalten). Verliert die Bildstabilisierung den Halt (Handy verdreht), wird nichts gezählt, bis das Board wiedergefunden ist. Abschaltbar in den Einstellungen.
 
+## Zweite Kamera (zweites Handy)
+- **Verbinden:** Am Hauptgerät „Zweites Handy verbinden“ (Startseite oder Einstellungen) → es erscheinen ein Code und ein QR-Code. Am zweiten Handy den QR-Code scannen oder OcheCam öffnen, „Als Zweitkamera nutzen“ und den Code eingeben. Das zweite Handy einmal kalibrieren. Die Leiste oben zeigt „2 Kameras aktiv“.
+- **Aufstellen:** Die Handys auf verschiedenen Seiten des Boards, gut 60–90° zueinander versetzt (z. B. eins links, eins rechts, beide etwas unterhalb).
+- **Wie es rechnet:** Jedes Handy erkennt die Darts selbst. Das zweite schickt für jeden Dart die Spitze und die Linie, auf der es den Dart sieht, ans Hauptgerät. Dort werden beide Linien geschnitten: Der Schnittpunkt ist die Spitze, auch wenn sie für eine Kamera verdeckt oder der Dart schräg ist. Sieht nur eine Kamera einen Dart (die andere ist verdeckt), zählt er trotzdem; taucht er später im anderen Bild auf, wird er nur genauer gesetzt, nicht doppelt gezählt.
+- **Zweites Bild:** Das Hauptgerät zeigt unten rechts ein kleines Live-Bild der zweiten Kamera (antippen = größer).
+- **Verbindung:** Direkt zwischen den Handys (WebRTC) im WLAN. Nur zum Finden über den Code wird kurz ein öffentlicher Vermittlungsdienst (PeerJS) genutzt; Bilder und Spielstand laufen direkt. Bricht die Verbindung ab, zählt das Hauptgerät allein weiter und verbindet sich neu, sobald das zweite Handy wieder da ist.
+- **Grenze:** Ein flacher Schatten auf dem Board sieht aus beiden Winkeln gleich aus und lässt sich nicht herausrechnen – gleichmäßiges Licht von vorne bleibt wichtig.
+
 ## Sprüche
 Lob bei Triple 20 und Triple 19, Lästern bei 1, 5 und daneben – aber nur, solange kein Finish möglich ist. Abschaltbar in den Einstellungen.
