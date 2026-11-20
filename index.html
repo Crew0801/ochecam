@@ -134,6 +134,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .calbar button.auto{background:var(--heat);color:#fff;font-weight:700}
 .calbar button:disabled{opacity:.6}
 .checkout.advance{flex-wrap:wrap;row-gap:4px}
+#btnNext.pulse{animation:nextpulse 1.2s ease-in-out infinite}
+@keyframes nextpulse{50%{box-shadow:0 0 0 6px rgba(196,255,61,.35)}}
 .checkout{flex-wrap:wrap;row-gap:2px;min-width:0}
 .checkout .route{white-space:nowrap}
 .checkout .alt{font:600 13px var(--body);letter-spacing:0;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}

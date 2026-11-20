@@ -38,6 +38,8 @@ Differenzbild gegenüber einem Referenzbild des Boards → größter veränderte
 - **Lernt aus Korrekturen:** Von Hand eingetippte, übersehene Darts machen die Erkennung empfindlicher bzw. lassen solche Formen zu; auf „Miss“ korrigierte Phantom-Darts machen sie strenger. Zurücksetzen in den Einstellungen.
 - **Bildstabilisierung:** Wackeln und Verrutschen des Handys werden bei jedem Bild ausgeglichen.
 - **Dart-Zählung:** Werden die Darts gezogen, bevor drei gezählt sind (einer ging ins Aus oder wurde übersehen), zählt die App die fehlenden als „daneben“ (Miss) und gibt an den nächsten Spieler ab – statt den nächsten Wurf dem falschen Spieler zu geben. Ein angestoßener Dart zählt nicht als neuer Dart; ein Bild mit einer Person davor wird nie als Referenz übernommen.
+- **Ein Wurf = ein Dart:** Die App zählt die Wurfbewegungen. Eine Bewegung bringt höchstens einen Dart – Flight, Spitze oder Schatten, die getrennt erscheinen, werden nicht doppelt gezählt. Sackt ein steckender Dart nach (an seiner alten Stelle wird das Board wieder sichtbar), zählt das nicht als neuer Dart.
+- **Nach einer Korrektur:** Wurde ein Dart von Hand eingetippt oder korrigiert, geht es erst mit „Weiter“ zum nächsten Spieler (auch kein Countdown gegen den Bot).
 
 ## Finish-Wege, Ausbullen, Nachkalibrieren
 - **Finish-Wege:** Im Finish-Bereich zeigt die Leiste den besten Weg und bis zu zwei Alternativen (z. B. 100: T20 · D20, oder Bull · Bull). Die anderen Spieler sehen ihren Weg auf ihrer Karte. Die Stimme sagt den Weg zu Beginn der Aufnahme und nach jedem Dart den Rest-Weg an.
