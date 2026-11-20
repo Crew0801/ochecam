@@ -13,7 +13,8 @@
 
   const settings = Object.assign({
     players: ['Spieler 1', 'Spieler 2'], start: 501, out: 'double', legs: 2,
-    sens: 55, tipPref: 'auto', voice: true, sfx: true, autoNext: true, wake: true, camId: '', banter: true
+    sens: 55, tipPref: 'auto', voice: true, sfx: true, autoNext: true, wake: true, camId: '', banter: true,
+    bullOff: 1, autoCal: true
   }, store.get('settings', {}));
   // Players are {name, bot} where bot is a level id from Core.BOT_LEVELS or null.
   settings.players = settings.players.map(p => typeof p === 'string' ? { name: p, bot: null } : p);
@@ -274,7 +275,9 @@
       leg: 1, starter: 0, cur: 0,
       rem: names.map(() => settings.start),
       legDarts: names.map(() => 0),
-      visit: [], over: false
+      visit: [], over: false,
+      // Bull-off: everyone throws one dart at the bull, closest starts. res: player index -> result.
+      bull: settings.bullOff && names.length > 1 ? { order: names.map((_, i) => i), pos: 0, res: {}, spots: [], round: 1 } : null
     };
     undoStack = [];
     persist();
@@ -303,6 +306,7 @@
 
   function addDart(d, meta) {
     if (!G || G.over) return;
+    if (G.bull) { bullThrow(d, meta || {}); return; }
     const st = visitState();
     if (st.done) { toast('Aufnahme ist voll – „Weiter“ drücken'); return; }
     snapshot();
@@ -318,6 +322,53 @@
     G.visit[i] = Object.assign({}, d, { manual: true });
     G.visit = G.visit.slice(0, 3);
     afterChange(false);
+  }
+
+  // ---------------- Bull-off: who starts ----------------
+  const dartsLeft = () => G.bull ? 1 : 3 - G.visit.length;
+  const boardClear = () => G.visit.length === 0 && !(G.bull && G.bull.spots.length); // no counted dart in the board
+  function bullText(r) { return r.bull ? 'Bull' : r.manual ? r.label : r.dist > 170 ? 'daneben' : Math.round(r.dist) + ' mm'; }
+  function bullSpoken(r) { return r.bull ? 'Bull!' : r.manual ? spokenDart(r) : r.dist > 170 ? 'daneben' : Math.round(r.dist / 10) < 1 ? Math.round(r.dist) + ' Millimeter' : (r.dist / 10).toFixed(1).replace('.', ',') + ' Zentimeter'; }
+  function bullThrow(d, meta) {
+    const B = G.bull, i = B.order[B.pos];
+    snapshot();
+    let dist, manual = false;
+    if (meta.img && H) { const [bx, by] = C.applyH(H, meta.img[0], meta.img[1]); dist = Math.hypot(bx, by); B.spots.push(meta.img.slice()); }
+    else if (meta.bp) dist = Math.hypot(meta.bp[0], meta.bp[1]);
+    else { manual = true; dist = d.v === 0 ? 999 : d.n === 25 ? (d.m === 2 ? 3 : 11) : 120; } // by hand only the field is known
+    const r = B.res[i] = { dist, n: d.n, m: d.m, v: d.v, label: d.label, bull: d.n === 25 && d.m === 2, manual };
+    if (r.bull) sfx.triple20(); else if (d.v === 0) sfx.miss(); else sfx.hit();
+    const parts = [G.players[i].name + ': ' + bullSpoken(r)];
+    B.pos++;
+    let spots = null;
+    if (B.pos < B.order.length) {
+      G.cur = B.order[B.pos];
+      parts.push(G.players[G.cur].name + ', du bist dran.');
+    } else {
+      // Everyone has thrown: closest wins; two bulls or the same field typed by hand = throw again.
+      const ranked = B.order.map(k => ({ k, r: B.res[k] })).sort((a, b) => a.r.dist - b.r.dist);
+      const top = ranked[0].r;
+      const same = (a, b) => (a.bull && b.bull) || ((a.manual || b.manual) && a.label === b.label) || (!a.manual && !b.manual && Math.abs(a.dist - b.dist) < 1);
+      const tied = ranked.filter(o => same(o.r, top)).map(o => o.k);
+      spots = B.spots; B.spots = [];
+      if (tied.length > 1) {
+        B.order = tied; B.pos = 0; B.res = {}; B.round++; G.cur = tied[0];
+        toast('Gleichstand – nochmal auf Bull: ' + tied.map(k => G.players[k].name).join(', '), 3500);
+        parts.push('Gleichstand! Nochmal.', G.players[G.cur].name + ' beginnt.');
+      } else {
+        const w = ranked[0].k;
+        G.bull = null; G.starter = G.cur = w;
+        toast(G.players[w].name + ' gewinnt das Ausbullen und beginnt!', 3500);
+        parts.push(G.players[w].name + ' beginnt. Game on!');
+      }
+    }
+    say(...parts);
+    persist(); render();
+    if (spots && spots.length) detector.waitForPull(spots);
+  }
+  function skipBull() {
+    snapshot(); G.bull = null; G.cur = G.starter; persist(); render();
+    detector.rearm(false); say('Game on! ' + G.players[G.cur].name + ', wirf an.');
   }
 
   function afterChange(announce) {
@@ -340,7 +391,10 @@
       if (st.bust) say(dartWord, 'Überworfen! Keine Punkte.');
       else if (st.win) say(dartWord, 'Game shot! ' + name + ' gewinnt das Leg.');
       else if (st.done) say(dartWord, line, callScore(st.sum));
-      else say(dartWord, line);
+      else {
+        const r = C.checkout(st.rem, 3 - G.visit.length, G.out);
+        say(dartWord, line, r ? 'Noch ' + st.rem + ': ' + r.map(spokenDart).join(', ') + '.' : null);
+      }
     }
     // Bot darts are virtual: nothing to pull from the board.
     if (st.done && !isBotTurn()) {
@@ -403,7 +457,7 @@
   function announceTurn() {
     const rem = G.rem[G.cur];
     const co = C.checkout(rem, 3, G.out);
-    if (co) say(G.players[G.cur].name + ', du brauchst ' + rem);
+    if (co) say(G.players[G.cur].name + ', du brauchst ' + rem + '.', co.map(spokenDart).join(', ') + '.');
   }
 
   function undo() {
@@ -451,6 +505,15 @@
   function scheduleBot() {
     clearTimeout(botTimer);
     if (!isBotTurn() || $('#game').hidden || !$('#modal').hidden) return;
+    if (G.bull) {
+      botTimer = setTimeout(() => {
+        if (!G.bull || !isBotTurn() || !$('#modal').hidden || $('#game').hidden) return;
+        const s = botLevel(G.players[G.cur].bot).sigma * 1.15, g = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+        const p = [g() * s, g() * s];
+        addDart(C.scoreAt(p[0], p[1]), { bot: true, bp: p });
+      }, 1600);
+      return;
+    }
     const st = visitState();
     if (st.done) { botTimer = setTimeout(() => { if (isBotTurn() && !$('#game').hidden && $('#modal').hidden) nextTurn(); }, 2800); return; }
     botTimer = setTimeout(() => {
@@ -479,6 +542,10 @@
         <span class="pname"></span><span class="prem num">${rem}</span>
         <span class="pmeta"><span>Ø ${avg(p.pts, p.darts)}</span><span>${G.legDarts[i]} D</span></span>`;
       card.querySelector('.pname').textContent = p.name;
+      if (i !== G.cur && !G.bull) {
+        const r = C.checkout(G.rem[i], 3, G.out);
+        if (r) { const s = document.createElement('span'); s.className = 'proute'; s.textContent = r.map(d => d.label).join(' · '); card.querySelector('.prem').after(s); }
+      }
       if (p.bot) { const tag = document.createElement('span'); tag.className = 'bottag'; tag.textContent = 'Bot ' + botLevel(p.bot).name; card.querySelector('.pmeta').prepend(tag); }
       strip.appendChild(card);
       if (i === G.cur) requestAnimationFrame(() => card.scrollIntoView({ inline: 'nearest', block: 'nearest' }));
@@ -488,12 +555,21 @@
     // Checkout hint ("tippt")
     const co = $('#checkout');
     const left = 3 - G.visit.length;
-    const route = !st.done ? C.checkout(st.rem, left, G.out) : null;
-    if (st.bust) { co.className = 'checkout none'; co.textContent = 'Überworfen – Darts ziehen, dann Weiter'; }
+    const routes = !st.done && !G.bull ? C.checkouts(st.rem, left, G.out, 3) : [];
+    const rtxt = r => r.map(d => d.label).join(' · ');
+    if (G.bull) {
+      const B = G.bull, done = Object.keys(B.res).map(k => escapeHtml(G.players[k].name) + ' ' + bullText(B.res[k]));
+      co.className = 'checkout bull';
+      co.innerHTML = `<span class="k">Ausbullen${B.round > 1 ? ' · Stechen' : ''}</span> ${escapeHtml(G.players[G.cur].name)} wirft auf Bull` + (done.length ? `<span class="alt">${done.join(' · ')}</span>` : '');
+    }
+    else if (advance && st.done) drawAdvance();
+    else if (st.bust) { co.className = 'checkout none'; co.textContent = 'Überworfen – Darts ziehen, dann Weiter'; }
     else if (st.win) { co.className = 'checkout'; co.innerHTML = '<span class="k">Game shot</span> Leg gewonnen!'; }
-    else if (route) { co.className = 'checkout'; co.innerHTML = '<span class="k">Weg</span> ' + route.map(d => d.label).join(' · '); }
     else if (st.done) { co.className = 'checkout none'; co.textContent = 'Darts ziehen – danach geht es automatisch weiter'; }
-    if (advance && st.done) drawAdvance();
+    else if (routes.length) {
+      co.className = 'checkout';
+      co.innerHTML = `<span class="k">Finish</span> <span class="route">${rtxt(routes[0])}</span>` + (routes.length > 1 ? `<span class="alt">oder ${routes.slice(1).map(rtxt).join('  ·  oder ')}</span>` : '');
+    }
     else { co.className = 'checkout none'; co.textContent = st.rem <= 180 && G.out !== 'single' ? 'Kein Finish möglich – stellen' : 'Noch kein Finish-Bereich'; }
 
     // Visit slots
@@ -512,7 +588,7 @@
     sum.innerHTML = `<b class="num">${st.bust ? 'BUST' : st.sum}</b><small>${st.win ? 'Check!' : 'Aufnahme'}</small>`;
     v.appendChild(sum);
 
-    $('#btnNext').textContent = st.win ? 'Leg!' : 'Weiter';
+    $('#btnNext').textContent = G.bull ? 'Überspringen' : st.win ? 'Leg!' : 'Weiter';
     const botTurn = isBotTurn();
     ['#btnMiss', '#btnPad', '#btnNext'].forEach(s => { $(s).disabled = botTurn; });
     if (botTurn && stream) setStatus('bot', G.players[G.cur].name + ' wirft …');
@@ -612,6 +688,7 @@
   $('#btnPad').onclick = () => openPad(G.visit.length);
   $('#btnUndo').onclick = undo;
   $('#btnNext').onclick = () => {
+    if (G && G.bull) { skipBull(); return; }
     // If camera-detected darts are still in the board, the next change is them being pulled.
     const dartsInBoard = G && G.visit.some(d => d.auto);
     if (dartsInBoard) detector.waitForPull();
@@ -905,9 +982,9 @@
       learnMiss(d) { learn(d, true); },
       learnPhantom() { learn(null, false); },
       reset() { ref = null; prev = null; stable = 0; bigSince = 0; this.lastBin = null; emptyRef = null; pulling = G ? visitState().done : false; },
-      waitForPull() {
+      waitForPull(spots) {
         pulling = true;
-        pullSpots = G ? G.visit.filter(d => d.img).map(d => d.img.slice()) : [];
+        pullSpots = spots ? spots.map(p => p.slice()) : G ? G.visit.filter(d => d.img).map(d => d.img.slice()) : [];
         if (stream) setStatus('pull', 'Darts ziehen');
       },
       get pulling() { return pulling; },
@@ -1023,6 +1100,49 @@
       emptyRef = null; cam = [0, 0]; camShift = [0, 0];
     }
 
+    /** The 4 calibration points as found by the automatic board search in the current frame (or null). */
+    function findBoard() {
+      const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
+      const W = 560, Hc = Math.round(W * vh / vw);
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = Hc;
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, W, Hc);
+      const res = C.autoCalibrate(cx.getImageData(0, 0, W, Hc).data, W, Hc);
+      return res.error || !res.points ? null : res.points.map(([x, y]) => d2v(x / W, y / Hc));
+    }
+
+    // Periodic re-calibration. calBase.off: offset between the stored points and what the board search finds,
+    // so a hand-tuned calibration keeps its fine-tuning. pendingCal: a correction seen once, applied when confirmed.
+    let calCheckAt = 0, calBase = null, pendingCal = null, recalAt = 0, recalFails = 0;
+    function refineCal() {
+      recalBusy = true;
+      setTimeout(() => {
+        try {
+          const found = findBoard(), vw = video.videoWidth, vh = video.videoHeight;
+          const now = calib.map(([x, y]) => [x + camShift[0], y + camShift[1]]); // where tracking says the board is
+          if (!found) { /* board search failed (light, darts, person): keep everything */ }
+          else if (!calBase || calBase.calib !== calib) {
+            calBase = { calib, off: now.map((p, i) => [p[0] - found[i][0], p[1] - found[i][1]]) }; pendingCal = null;
+          } else {
+            const want = found.map((p, i) => [p[0] + calBase.off[i][0], p[1] + calBase.off[i][1]]);
+            const delta = want.map((p, i) => [(p[0] - now[i][0]) * vw, (p[1] - now[i][1]) * vh]);
+            const dev = Math.max(...delta.map(d => Math.hypot(d[0], d[1])));
+            if (dev > 3 && dev < 80) {
+              const agree = pendingCal && Math.max(...delta.map((d, i) => Math.hypot(d[0] - pendingCal[i][0], d[1] - pendingCal[i][1]))) < 2.5;
+              if (agree) {
+                calib = want; store.set('calib', calib); updateH();
+                ref = prev = null; emptyRef = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
+                calBase = { calib, off: calBase.off }; pendingCal = null;
+                self.recals = (self.recals || 0) + 1;
+                toast('Kalibrierung automatisch nachgeführt', 2200);
+              } else pendingCal = delta;
+            } else pendingCal = null;
+          }
+        } catch (e) { console.error(e); }
+        recalBusy = false;
+      }, 0);
+    }
+
     /** Bigger move: look for the board again in the current frame. */
     function autoRecal(reason) {
       if (recalBusy) return;
@@ -1030,22 +1150,35 @@
       setStatus('motion', 'Kamera bewegt – suche Board …');
       setTimeout(() => {
         try {
-          const cr = crop(), vw = video.videoWidth, vh = video.videoHeight;
-          const W = 560, Hc = Math.round(W * vh / vw);
-          const cv = document.createElement('canvas'); cv.width = W; cv.height = Hc;
-          const cx = cv.getContext('2d', { willReadFrequently: true });
-          cx.drawImage(video, cr.x0 * vw, cr.y0 * vh, cr.w * vw, cr.w * vh, 0, 0, W, Hc);
-          const res = C.autoCalibrate(cx.getImageData(0, 0, W, Hc).data, W, Hc);
-          const found = res.error ? null : res.points.map(([x, y]) => d2v(x / W, y / Hc));
+          const vw = video.videoWidth, vh = video.videoHeight;
+          const raw = findBoard();
+          // Keep the hand fine-tuning of the calibration (offset to what the board search finds).
+          const found = raw && calBase ? raw.map((p, i) => [p[0] + calBase.off[i][0], p[1] + calBase.off[i][1]]) : raw;
+          recalFails = found ? 0 : recalFails + 1;
           // Board still where the tracker says it is (someone was just standing in front): change nothing.
           const off = found ? Math.max(...found.map(([x, y], i) => Math.hypot((x - calib[i][0] - camShift[0]) * vw, (y - calib[i][1] - camShift[1]) * vh))) : 1e9;
-          if (found && off < 6) {
+          if (found && off < 6 && trackBad <= 12) {
             setStatus(pulling ? 'pull' : 'ready', pulling ? 'Darts ziehen' : 'Bereit – wirf!');
+          } else if (found && off < 6) {
+            // Board where it was, but the stabilisation lost its anchor (e.g. light changed): start a new one.
+            calib = found; store.set('calib', calib); updateH();
+            ref = prev = null; emptyRef = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
+            if (calBase) calBase = { calib, off: calBase.off };
           } else if (found) {
             calib = found; store.set('calib', calib); updateH();
             ref = prev = null; emptyRef = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
+            if (calBase) calBase = { calib, off: calBase.off };
             toast('Kamera hat sich bewegt – Board neu erkannt', 3000);
-          } else {
+          } else if (recalFails >= 2 && trackBad > 90) { // ~8 s without hold and no board found (a person leaves sooner)
+            // Board search failed twice, picture calm: keep the calibration where tracking last had it and take a
+            // new reference picture, so counting can go on.
+            calib = calib.map(([x, y]) => [x + camShift[0], y + camShift[1]]); store.set('calib', calib); updateH();
+            ref = prev = null; emptyRef = null; tracker = null; cam = [0, 0]; camShift = [0, 0]; camEdge = 1;
+            calBase = null; recalFails = 0;
+            toast('Kamera hat sich bewegt – Bild neu ausgerichtet. Liegen Treffer daneben: neu kalibrieren.', 4500);
+          } else if (recalFails >= 3) {
+            // Not found several times in a row (a person in front fails only once or twice): ask for help.
+            recalFails = 0;
             toast('Kamera hat sich bewegt. Bitte neu kalibrieren (Fadenkreuz oben rechts).', 5000);
           }
         } catch (e) { console.error(e); }
@@ -1097,14 +1230,24 @@
       const L = C.luma(raw, PW, PH);
       if (!tracker) { tracker = C.makeTracker(L, mask, PW, PH); cam = [0, 0]; trackBad = 0; }
       const tr = tracker.track(L, cam);
-      if (tr.ok) { cam = [tr.dx, tr.dy]; trackBad = 0; camEdge = Math.max(camEdge, Math.ceil(Math.max(Math.abs(cam[0]), Math.abs(cam[1]))) + 2); } else trackBad++;
+      if (tr.ok) { cam = [tr.dx, tr.dy]; trackBad = 0; recalFails = 0; camEdge = Math.max(camEdge, Math.ceil(Math.max(Math.abs(cam[0]), Math.abs(cam[1]))) + 2); } else trackBad++;
       camShift = [cam[0] / PW * pr.w, cam[1] / PH * pr.w];
       const cur = Math.abs(cam[0]) < 0.05 && Math.abs(cam[1]) < 0.05 ? raw : C.warpShift(raw, PW, PH, cam[0], cam[1]);
       // Board out of reach of the tracker for a while and the picture is calm: find it again.
-      if (trackBad > 40 && !pulling && prev && C.motionCount(cur, prev, mask, PW, PH, params().thr, null, camEdge) <= params().motion) { trackBad = -60; autoRecal(); return; }
+      // Lost the board (phone turned/tilted, or someone in front): count nothing – the differences would be
+      // the board edges, not darts. Once the picture is calm, look for the board again.
+      if (trackBad >= 4) {
+        cand = null; stable = 0; self.preview = [];
+        personSeen = true; armed = true; // usually someone in front of the board
+        const calm = prev && C.motionCount(cur, prev, mask, PW, PH, params().thr, null, camEdge) <= params().motion;
+        prev = copy(cur);
+        if (calm && trackBad > 12 && now - recalAt > 4000) { recalAt = now; autoRecal(); }
+        else if (!pulling && !recalBusy) setStatus('motion', 'Kamera bewegt …');
+        return;
+      }
       if (!ref) {
         ref = copy(cur); prev = copy(cur); stable = 0; armed = false; cand = null;
-        if (!emptyRef && !pulling && G.visit.length === 0) emptyRef = copy(cur);
+        if (!emptyRef && !pulling && boardClear()) emptyRef = copy(cur);
         return;
       }
       if (paused) {
@@ -1127,7 +1270,7 @@
       if (stable < 5 && armed && !pulling && stable >= 1) {
         const pv = changed(cur, ref, P);
         if (pv.count >= P.minArea && pv.count <= P.maxArea) {
-          const hs = C.findDarts(pv.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3 - G.visit.length, tipPref: settings.tipPref, dirAt });
+          const hs = C.findDarts(pv.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: dartsLeft(), tipPref: settings.tipPref, dirAt });
           self.preview = hs.map(hh => { const img = p2v(hh.x, hh.y); return { img, label: C.scoreAt(...C.applyH(H, img[0], img[1])).label }; });
           if (self.preview.length) setStatus('hit', 'Dart landet … ' + self.preview.map(p => p.label).join(', ') + '?');
         }
@@ -1164,21 +1307,24 @@
         bigSince = 0; cand = null; armed = false; personSeen = false; if (self.preview.length) { self.preview = []; drawOverlay(); }
         if (stable % 8 === 0) {
           blend(ref, cur); // follow slow light changes
-          if (G.visit.length === 0) emptyRef = copy(ref);
+          if (boardClear()) emptyRef = copy(ref);
         }
-        if (stable >= 12 && G.visit.length === 0 && Math.hypot(cam[0], cam[1]) > 1.5) { bake(); return; }
+        if (stable >= 12 && boardClear() && Math.hypot(cam[0], cam[1]) > 1.5) { bake(); return; }
+        // Now and then, with the board empty and calm: find the board again and follow slow drift.
+        if (settings.autoCal !== false && stable >= 15 && boardClear() && !recalBusy &&
+            now - calCheckAt > (calBase && calBase.calib === calib ? (pendingCal ? 6000 : 20000) : 3000)) { calCheckAt = now; refineCal(); return; }
         setStatus('ready', 'Bereit – wirf!');
         return;
       }
       if (!armed) {
         // Changed without visible movement. A clear dart shape still counts (it can land between two frames);
         // anything else is light drift and gets absorbed.
-        const hs = ch.count <= P.maxArea ? C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: 3 - G.visit.length, tipPref: settings.tipPref, dirAt }) : [];
+        const hs = ch.count <= P.maxArea ? C.findDarts(ch.bin, PW, PH, { minArea: P.minArea, minElong: P.minElong, max: dartsLeft(), tipPref: settings.tipPref, dirAt }) : [];
         if (hs.some(hh => !hh.unsure && hh.conf >= 0.5)) armed = true;
         else {
           // Never take a picture with a person in it as the new reference (only after ~10 s of total calm,
           // e.g. the light was switched on) – otherwise the pulled darts behind them go unnoticed.
-          if (stable >= 12 && (ch.count <= P.maxArea || stable >= 120)) { remember(hs.concat(hs.rejected || []), now); ref = copy(cur); if (G.visit.length === 0) emptyRef = copy(cur); self.lastBin = null; self.preview = []; }
+          if (stable >= 12 && (ch.count <= P.maxArea || stable >= 120)) { remember(hs.concat(hs.rejected || []), now); ref = copy(cur); if (boardClear()) emptyRef = copy(cur); self.lastBin = null; self.preview = []; }
           return;
         }
       }
@@ -1212,7 +1358,7 @@
           return;
         }
       }
-      const left = 3 - G.visit.length;
+      const left = dartsLeft();
       let bin = ch.bin;
       if (emptyRef && G.visit.length) {
         // Where the picture is back to the empty board, a dart left (knocked out or moved), none arrived.
@@ -1295,7 +1441,7 @@
   $('#btnSettings').onclick = () => {
     $('#sens').value = settings.sens; $('#sensVal').textContent = settings.sens;
     $('#tipPref').value = settings.tipPref; $('#voice').checked = settings.voice; fillVoiceSelect(); $('#voiceRate').value = settings.voiceRate || 1; $('#sfx').checked = settings.sfx !== false;
-    $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake; $('#banter').checked = settings.banter !== false;
+    $('#autoNext').checked = settings.autoNext; $('#wake').checked = settings.wake; $('#banter').checked = settings.banter !== false; $('#autoCal').checked = settings.autoCal !== false;
     const L = settings.learn;
     $('#learnInfo').textContent = L.n ? `${L.n} Korrektur${L.n === 1 ? '' : 'en'} gelernt (Schwelle ${L.thr > 0 ? '+' : ''}${L.thr}, Mindestgröße ×${L.area.toFixed(2)}, Form ab ${L.elong.toFixed(2)})` : 'Noch nichts gelernt.';
     $('#camToggle').textContent = stream ? 'Kamera stoppen' : 'Kamera starten';
@@ -1311,6 +1457,7 @@
   $('#autoNext').onchange = e => { settings.autoNext = e.target.checked; saveSettings(); };
   $('#wake').onchange = e => { settings.wake = e.target.checked; saveSettings(); if (settings.wake) requestWake(); else if (wakeLock) wakeLock.release().catch(() => {}); };
   $('#banter').onchange = e => { settings.banter = e.target.checked; saveSettings(); };
+  $('#autoCal').onchange = e => { settings.autoCal = e.target.checked; saveSettings(); };
   $('#learnReset').onclick = () => { settings.learn = Object.assign({}, LEARN0); saveSettings(); $('#learnInfo').textContent = 'Noch nichts gelernt.'; toast('Gelerntes zurückgesetzt'); };
   $('#refReset').onclick = () => { detector.reset(); $('#setSheet').hidden = true; toast('Referenz wird neu aufgenommen'); };
 
@@ -1329,7 +1476,9 @@
   $('#startGame').onclick = () => {
     if ('speechSynthesis' in window) try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch {}
     sfx.unlock();
-    newGame(); showGame(); detector.reset(); say('Game on! ' + G.players[0].name + ', wirf an.');
+    newGame(); showGame(); detector.reset();
+    if (G.bull) { say('Ausbullen! Wer am nächsten am Bull ist, beginnt.', G.players[0].name + ', wirf auf Bull.'); toast('Ausbullen: jeder wirft einen Dart auf Bull', 3000); }
+    else say('Game on! ' + G.players[0].name + ', wirf an.');
   };
   $('#resumeGame').onclick = () => { sfx.unlock(); showGame(); detector.reset(); };
 

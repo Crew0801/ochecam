@@ -129,6 +129,40 @@
     return null;
   }
 
+  /**
+   * Up to `max` finish routes for `rem` with `left` darts, best first. Alternatives start with a different
+   * dart (e.g. 100: T20 · D20, or Bull · Bull); for a one-dart finish they show the set-up way (40: D20, or 20 · D10).
+   */
+  function checkouts(rem, left, out, max) {
+    max = max || 3;
+    const best = checkout(rem, left, out);
+    if (!best) return [];
+    const limit = best.length === 1 ? Math.min(left, 2) : best.length;
+    const firsts = new Set([best[0].label]), cands = [];
+    SETUP.concat(THROWS.filter(d => isFinish(d, out))).forEach((s, idx) => {
+      if (firsts.has(s.label)) return;
+      firsts.add(s.label);
+      let route = null;
+      if (s.v === rem && isFinish(s, out)) route = [s];
+      else if (left > 1 && s.v < rem) { const t = checkout(rem - s.v, left - 1, out); if (t) route = [s].concat(t); }
+      if (route && route.length <= limit) {
+        // How comfortable the way is: good finishing double, no risky triple where a single does the job.
+        let cost = finishRank(route[route.length - 1]) * 3 + idx * 0.01, r = rem;
+        for (const d of route.slice(0, -1)) {
+          cost += d.m === 3 ? (r > 60 ? 0 : 10) : d.m === 2 ? 30 : d.n === 25 ? 5 : 0;
+          r -= d.v;
+        }
+        cands.push({ route, cost });
+      }
+    });
+    cands.sort((a, b) => a.route.length - b.route.length || a.cost - b.cost);
+    // Same darts in another order is no real alternative.
+    const bag = r => r.slice(0, -1).map(d => d.label).sort().join() + '|' + r[r.length - 1].label;
+    const seen = new Set([bag(best)]), res = [best];
+    for (const c of cands) { if (res.length >= max) break; if (!seen.has(bag(c.route))) { seen.add(bag(c.route)); res.push(c.route); } }
+    return res;
+  }
+
   // ---------- Detection ----------
   /** Per-pixel max channel difference between two RGBA buffers, inside mask. */
   /** Average colour shift between two frames inside the mask (auto-exposure / light changes). */
@@ -1009,7 +1043,7 @@
   ];
 
   const api = {
-    SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, isFinish,
+    SEG, R, CAL_NUMS, CAL_BOARD, dart, scoreAt, homography, applyH, checkout, checkouts, isFinish,
     meanOffset, diffMask, denoise, components, findDart, findDarts, autoCalibrate, boardColor, estimateShift, shiftImage, luma, makeTracker, warpShift, diffMaskTol, motionCount, dartModel, traceTip, aimPoint, botTarget, botThrow, BOT_LEVELS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -39,5 +39,10 @@ Differenzbild gegenüber einem Referenzbild des Boards → größter veränderte
 - **Bildstabilisierung:** Wackeln und Verrutschen des Handys werden bei jedem Bild ausgeglichen.
 - **Dart-Zählung:** Werden die Darts gezogen, bevor drei gezählt sind (einer ging ins Aus oder wurde übersehen), zählt die App die fehlenden als „daneben“ (Miss) und gibt an den nächsten Spieler ab – statt den nächsten Wurf dem falschen Spieler zu geben. Ein angestoßener Dart zählt nicht als neuer Dart; ein Bild mit einer Person davor wird nie als Referenz übernommen.
 
+## Finish-Wege, Ausbullen, Nachkalibrieren
+- **Finish-Wege:** Im Finish-Bereich zeigt die Leiste den besten Weg und bis zu zwei Alternativen (z. B. 100: T20 · D20, oder Bull · Bull). Die anderen Spieler sehen ihren Weg auf ihrer Karte. Die Stimme sagt den Weg zu Beginn der Aufnahme und nach jedem Dart den Rest-Weg an.
+- **Ausbullen:** Beim Start wirft jeder einen Dart auf Bull, der nächste beginnt. Die Kamera misst den Abstand in Millimetern; zwei Bulls oder gleiches Ergebnis = Stechen. Bots werfen mit. Abschaltbar unter „Wer beginnt“, „Überspringen“ lässt Spieler 1 beginnen.
+- **Nachkalibrieren:** Ist das Board leer und ruhig, sucht die App etwa alle 20 s das Board neu und führt die Kalibrierung nach, wenn sie sich zweimal gleich verschoben hat (Feinkorrekturen von Hand bleiben erhalten). Verliert die Bildstabilisierung den Halt (Handy verdreht), wird nichts gezählt, bis das Board wiedergefunden ist. Abschaltbar in den Einstellungen.
+
 ## Sprüche
 Lob bei Triple 20 und Triple 19, Lästern bei 1, 5 und daneben – aber nur, solange kein Finish möglich ist. Abschaltbar in den Einstellungen.

@@ -134,6 +134,11 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .calbar button.auto{background:var(--heat);color:#fff;font-weight:700}
 .calbar button:disabled{opacity:.6}
 .checkout.advance{flex-wrap:wrap;row-gap:4px}
+.checkout{flex-wrap:wrap;row-gap:2px;min-width:0}
+.checkout .route{white-space:nowrap}
+.checkout .alt{font:600 13px var(--body);letter-spacing:0;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.checkout.bull{background:linear-gradient(90deg,rgba(61,228,255,.18),rgba(143,107,255,.1));border-color:rgba(61,228,255,.4);color:var(--cyan)}
+.pcard .proute{font:700 11px var(--body);color:var(--amber);letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .advtxt{flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .voicerow{display:flex;gap:8px}
 .voicerow select{flex:1;min-width:0}
@@ -227,6 +232,12 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
     </div>
   </div>
   <div class="group">
+    <span class="label">Wer beginnt</span>
+    <div class="chips" data-opt="bullOff">
+      <button class="chip" data-v="1">Ausbullen</button><button class="chip" data-v="0">Spieler 1</button>
+    </div>
+  </div>
+  <div class="group">
     <span class="label">Legs zum Sieg</span>
     <div class="chips" data-opt="legs">
       <button class="chip" data-v="1">1</button><button class="chip" data-v="2">2</button><button class="chip" data-v="3">3</button><button class="chip" data-v="5">5</button>
@@ -317,6 +328,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
     </div>
     <label class="switch"><span>Effekt-Sounds (Treffer, Daneben, Konfetti)</span><input type="checkbox" id="sfx"></label>
     <label class="switch"><span>Automatisch weiter, wenn Darts gezogen</span><input type="checkbox" id="autoNext"></label>
+    <label class="switch"><span>Zwischendurch automatisch nachkalibrieren</span><input type="checkbox" id="autoCal"></label>
     <label class="switch"><span>Bildschirm anlassen</span><input type="checkbox" id="wake"></label>
     <button class="secondary" id="camToggle">Kamera stoppen</button>
     <button class="secondary" id="refReset">Board-Referenz neu aufnehmen</button>
